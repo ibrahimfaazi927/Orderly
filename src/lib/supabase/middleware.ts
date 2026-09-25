@@ -56,9 +56,24 @@ export async function updateSession(request: NextRequest) {
   // Refresh auth token with Supabase Auth
   const {
     data: { user },
+    error: authError,
   } = await supabase.auth.getUser();
 
+  if (authError) {
+    console.warn(
+      "[Orderly Middleware] auth.getUser() error:",
+      authError.message,
+      "| path:", request.nextUrl.pathname,
+      "| ua:", request.headers.get("user-agent")?.substring(0, 120)
+    );
+  }
+
   if (!user && isProtectedRoute) {
+    console.info(
+      "[Orderly Middleware] Unauthenticated access blocked:",
+      request.nextUrl.pathname,
+      "| ua:", request.headers.get("user-agent")?.substring(0, 120)
+    );
     const redirectUrl = request.nextUrl.clone();
     redirectUrl.pathname = "/login";
     redirectUrl.searchParams.set("redirectTo", request.nextUrl.pathname);

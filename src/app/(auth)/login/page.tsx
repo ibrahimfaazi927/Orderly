@@ -3,13 +3,14 @@
 import { useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { loginBusiness } from "@/lib/auth-service";
+import { loginBusiness, isSupabaseConfigured } from "@/lib/auth-service";
 import { ArrowRight, AlertCircle, Sparkles, Eye, EyeOff, CheckCircle2 } from "lucide-react";
 import OrderlyLogo from "@/components/OrderlyLogo";
 import ForgotPasswordModal from "@/components/auth/ForgotPasswordModal";
 
 export default function LoginPage() {
   const router = useRouter();
+  const isConfigured = isSupabaseConfigured();
   const [identifier, setIdentifier] = useState("");
   const [password, setPassword] = useState("");
   const [showPassword, setShowPassword] = useState(false);
@@ -27,7 +28,11 @@ export default function LoginPage() {
     const cleanPass = password.trim();
 
     if (!cleanId) {
-      setError("Please enter your Business Work Email or Account ID.");
+      setError(
+        isConfigured
+          ? "Please enter your Business Email address."
+          : "Please enter your Business Work Email or Account ID."
+      );
       return;
     }
 
@@ -47,20 +52,27 @@ export default function LoginPage() {
         return;
       }
 
+      router.refresh();
       router.push("/dashboard");
-    } catch {
+    } catch (err) {
+      console.error("[Orderly Auth] Login handler error:", err instanceof Error ? err.message : err);
       setError("Unable to authenticate. Please try again.");
       setLoading(false);
     }
   };
 
   const handleDemoLogin = async () => {
+    if (isConfigured) {
+      setError("Demo business login is disabled in live mode. Please sign in with your registered business email.");
+      return;
+    }
     setLoading(true);
     setError(null);
     setIdentifier("owner@sunrisebistro.in");
     setPassword("demo123");
     const res = await loginBusiness("owner@sunrisebistro.in", "demo123");
     if (res.success) {
+      router.refresh();
       router.push("/dashboard");
     } else {
       setError(res.error || "Failed demo authentication.");
@@ -129,17 +141,21 @@ export default function LoginPage() {
                 className="block text-xs font-bold uppercase tracking-wider mb-1.5"
                 style={{ color: "#2d6a4f" }}
               >
-                Business Email or Account ID
+                {isConfigured ? "Business Email" : "Business Email or Account ID"}
               </label>
               <input
                 id="identifier"
                 name="identifier"
-                type="text"
-                autoComplete="username"
+                type="email"
+                inputMode="email"
+                autoCapitalize="none"
+                autoCorrect="off"
+                spellCheck={false}
+                autoComplete="username email"
                 required
                 value={identifier}
                 onChange={(e) => setIdentifier(e.target.value)}
-                placeholder="owner@sunrisebistro.in or acc-sunrise-001"
+                placeholder={isConfigured ? "you@yourrestaurant.com" : "owner@sunrisebistro.in or your email"}
                 className="block w-full rounded-xl px-3.5 py-2.5 text-sm transition focus:outline-none focus:ring-2 focus:ring-[#2d6a4f]"
                 style={{
                   backgroundColor: "#faf8f4",
@@ -181,6 +197,9 @@ export default function LoginPage() {
                 id="password"
                 name="password"
                 type={showPassword ? "text" : "password"}
+                autoCapitalize="none"
+                autoCorrect="off"
+                spellCheck={false}
                 autoComplete="current-password"
                 required
                 value={password}
@@ -206,23 +225,31 @@ export default function LoginPage() {
             </button>
           </form>
 
-          {/* Quick Demo Option */}
-          <div className="mt-6 pt-5" style={{ borderTop: "1px solid #eae4d8" }}>
-            <button
-              type="button"
-              onClick={handleDemoLogin}
-              disabled={loading}
-              className="w-full flex items-center justify-center gap-2 py-2.5 px-4 rounded-xl text-xs font-bold transition cursor-pointer hover:bg-[#f0ebe0]"
-              style={{
-                backgroundColor: "#f7f4ec",
-                border: "1px solid #d8d1c5",
-                color: "#1a2e1f",
-              }}
-            >
-              <Sparkles className="h-4 w-4 text-[#2d6a4f]" />
-              Explore Demo Business (Sunrise Bistro)
-            </button>
-          </div>
+          {/* Quick Demo Option - only shown in local / mock mode */}
+          {!isConfigured ? (
+            <div className="mt-6 pt-5" style={{ borderTop: "1px solid #eae4d8" }}>
+              <button
+                type="button"
+                onClick={handleDemoLogin}
+                disabled={loading}
+                className="w-full flex items-center justify-center gap-2 py-2.5 px-4 rounded-xl text-xs font-bold transition cursor-pointer hover:bg-[#f0ebe0]"
+                style={{
+                  backgroundColor: "#f7f4ec",
+                  border: "1px solid #d8d1c5",
+                  color: "#1a2e1f",
+                }}
+              >
+                <Sparkles className="h-4 w-4 text-[#2d6a4f]" />
+                Explore Demo Business (Sunrise Bistro)
+              </button>
+            </div>
+          ) : (
+            <div className="mt-6 pt-4 text-center" style={{ borderTop: "1px solid #eae4d8" }}>
+              <p className="text-xs text-[#6c7d73]">
+                Production instance active &bull; Sign in with your registered business email
+              </p>
+            </div>
+          )}
 
           <div className="mt-6 text-center text-sm" style={{ color: "#6c7d73" }}>
             Don't have a business account?{" "}

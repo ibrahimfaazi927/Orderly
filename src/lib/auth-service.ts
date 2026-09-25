@@ -231,7 +231,19 @@ export async function loginBusiness(
         password: cleanPass,
       });
 
-      if (!authError && authData?.user) {
+      if (authError) {
+        console.warn(
+          "[Orderly Auth] Supabase signInWithPassword failed:",
+          authError.message,
+          "| status:", authError.status
+        );
+        return {
+          success: false,
+          error: authError.message || "Authentication failed. Please check your credentials.",
+        };
+      }
+
+      if (authData?.user) {
         setSessionCookie();
         const accounts = getStoredAccounts();
         let existing = accounts.find(
@@ -255,8 +267,18 @@ export async function loginBusiness(
         }
         return { success: true, account: existing };
       }
-    } catch {
-      // Fall through to local accounts check
+
+      return {
+        success: false,
+        error: "Unable to retrieve authenticated session. Please try again.",
+      };
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : String(err);
+      console.error("[Orderly Auth] Unexpected error during Supabase login:", message);
+      return {
+        success: false,
+        error: message || "An unexpected error occurred during authentication.",
+      };
     }
   }
 
