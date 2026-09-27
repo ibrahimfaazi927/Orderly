@@ -3,6 +3,7 @@
 import { useState, useEffect, use, useMemo, useRef } from "react";
 import {
   getLocalState,
+  getRestaurantState,
   saveLocalState,
   createOrderFromCustomer,
 } from "@/lib/store";
@@ -99,8 +100,38 @@ export default function CustomerOrderPage({
   const [callWaiterSent, setCallWaiterSent] = useState(false);
   const previousStatusRef = useRef<string | null>(null);
 
+  // Loading / error state
+  const [menuError, setMenuError] = useState<string | null>(null);
+
   // Authoritatively load restaurant, table, categories, and menu items from server/Supabase
   const loadMenu = async () => {
+    // 1. Instant check: inspect if this browser has local state for this restaurant
+    const local = getRestaurantState(restaurantSlug);
+    const isLocalMatch =
+      local &&
+      local.restaurant &&
+      (local.restaurant.slug?.toLowerCase() === restaurantSlug.toLowerCase() ||
+       local.restaurant.id?.toLowerCase() === restaurantSlug.toLowerCase() ||
+       local.restaurant.name?.toLowerCase().replace(/[^a-z0-9]/g, "") ===
+         restaurantSlug.toLowerCase().replace(/[^a-z0-9]/g, ""));
+
+    if (isLocalMatch && local.restaurant.name !== "Sunrise Bistro") {
+      setRestaurant(local.restaurant);
+      setCategories(local.categories || []);
+      setMenuItems(local.menuItems || []);
+      const matchedTable =
+        local.tables?.find((t) => t.token === tableToken || t.id === tableToken) ||
+        local.tables?.[0] || {
+          id: `tbl-${Date.now()}`,
+          restaurant_id: local.restaurant.id,
+          table_number: "Table 01",
+          token: tableToken,
+          is_active: true,
+        };
+      setTable(matchedTable);
+      setMenuError(null);
+    }
+
     try {
       const res = await fetch(
         `/api/restaurants/public?slug=${encodeURIComponent(restaurantSlug)}&tableToken=${encodeURIComponent(tableToken)}`
@@ -108,36 +139,66 @@ export default function CustomerOrderPage({
       if (res.ok) {
         const data = await res.json();
         if (data.success && data.restaurant) {
+          // If server returned real Supabase data, Supabase is authoritative
+          if (data.source === "supabase") {
+            setRestaurant(data.restaurant);
+            setCategories(data.categories || []);
+            setMenuItems(data.menuItems || []);
+            if (data.table) {
+              setTable(data.table);
+            }
+            setMenuError(null);
+            return;
+          }
+
+          // If server returned demo data matching this restaurant, use it
+          if (data.source === "demo") {
+            setRestaurant(data.restaurant);
+            setCategories(data.categories || []);
+            setMenuItems(data.menuItems || []);
+            if (data.table) {
+              setTable(data.table);
+            }
+            setMenuError(null);
+            return;
+          }
+
+          // If server returned generic mock data, do not overwrite a real local restaurant
+          if (isLocalMatch && local.restaurant.name !== "Sunrise Bistro") {
+            return;
+          }
+
+          if (
+            restaurantSlug.toLowerCase() !== "sunrise-bistro" &&
+            data.restaurant.name === "Sunrise Bistro"
+          ) {
+            if (!isLocalMatch) {
+              setMenuError(`Restaurant "${restaurantSlug}" not found.`);
+            }
+            return;
+          }
+
           setRestaurant(data.restaurant);
           setCategories(data.categories || []);
           setMenuItems(data.menuItems || []);
           if (data.table) {
             setTable(data.table);
           }
+          setMenuError(null);
           return;
         }
       }
-    } catch (err) {
-      console.warn("[Customer Menu] Failed to load from API, falling back to local store:", err);
-    }
 
-    // Fallback: local or mock state
-    const state = getLocalState();
-    setRestaurant(state.restaurant);
-    const matchedTable = state.tables.find((t) => t.token === tableToken);
-    setTable(
-      matchedTable || {
-        id: "tbl-fallback",
-        restaurant_id: state.restaurant.id,
-        table_number: "Table 01",
-        token: tableToken,
-        is_active: true,
-        created_at: new Date().toISOString(),
-        updated_at: new Date().toISOString(),
+      if (!isLocalMatch) {
+        const errData = await res.json().catch(() => null);
+        setMenuError(errData?.error || `Restaurant "${restaurantSlug}" not found. Please check the QR code or URL.`);
       }
-    );
-    setCategories(state.categories || []);
-    setMenuItems(state.menuItems || []);
+    } catch (err) {
+      if (!isLocalMatch) {
+        console.warn("[Customer Menu] Failed to load from API:", err);
+        setMenuError("Unable to load the restaurant menu. Please check your internet connection and try again.");
+      }
+    }
   };
 
   // Sync state for kitchen order tracking
@@ -441,6 +502,32 @@ export default function CustomerOrderPage({
     setCallWaiterSent(true);
     setTimeout(() => setCallWaiterSent(false), 4000);
   };
+
+  // -------------------------------------------------------------
+  // ERROR VIEW
+  // -------------------------------------------------------------
+  if (menuError && !restaurant) {
+    return (
+      <div className="min-h-screen bg-slate-50 flex items-center justify-center p-6 text-center font-sans">
+        <div className="max-w-md w-full bg-white rounded-3xl p-8 border border-slate-200 shadow-sm space-y-4">
+          <div className="h-16 w-16 rounded-full bg-rose-100 text-rose-600 flex items-center justify-center mx-auto">
+            <AlertCircle className="h-8 w-8" />
+          </div>
+          <h2 className="text-xl font-black text-slate-900">Menu Unavailable</h2>
+          <p className="text-sm text-slate-600 leading-relaxed">{menuError}</p>
+          <button
+            onClick={() => {
+              setMenuError(null);
+              loadMenu();
+            }}
+            className="w-full py-3 bg-slate-900 text-white rounded-xl text-xs font-bold hover:bg-slate-800 transition cursor-pointer"
+          >
+            Try Again
+          </button>
+        </div>
+      </div>
+    );
+  }
 
   // -------------------------------------------------------------
   // ACTIVE ORDER TRACKING VIEW

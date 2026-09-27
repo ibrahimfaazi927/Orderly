@@ -18,7 +18,7 @@ import {
   Printer,
   Activity,
 } from "lucide-react";
-import { getLocalState } from "@/lib/store";
+import { getLocalState, saveLocalState } from "@/lib/store";
 import { formatCurrency } from "@/lib/utils";
 import { Order, MenuItem, RestaurantTable } from "@/types/database";
 
@@ -42,6 +42,56 @@ export default function DashboardHomePage() {
     };
 
     syncData();
+
+    // Fetch authoritative restaurant data from Supabase
+    const syncFromSupabase = async () => {
+      try {
+        const restRes = await fetch("/api/restaurants");
+        if (restRes.ok) {
+          const restData = await restRes.json();
+          if (restData.success && restData.restaurant) {
+            const authRest = restData.restaurant;
+            setRestaurant(authRest);
+            setCurrency(authRest.currency || "INR");
+
+            const state = getLocalState();
+            if (state.restaurant.id !== authRest.id) {
+              state.restaurant = authRest;
+              saveLocalState(state);
+            }
+
+            // Sync menu items and tables
+            const [itemsRes, tblRes] = await Promise.all([
+              fetch(`/api/menu/items?restaurant_id=${authRest.id}`),
+              fetch(`/api/tables?restaurant_id=${authRest.id}`),
+            ]);
+
+            if (itemsRes.ok) {
+              const itemsData = await itemsRes.json();
+              if (itemsData.items) {
+                setMenuItems(itemsData.items);
+                const freshState = getLocalState();
+                freshState.menuItems = itemsData.items;
+                saveLocalState(freshState);
+              }
+            }
+            if (tblRes.ok) {
+              const tblData = await tblRes.json();
+              if (tblData.tables) {
+                setTables(tblData.tables);
+                const freshState = getLocalState();
+                freshState.tables = tblData.tables;
+                saveLocalState(freshState);
+              }
+            }
+          }
+        }
+      } catch (err) {
+        console.warn("[Dashboard Home] Non-blocking: Supabase sync failed:", err);
+      }
+    };
+    syncFromSupabase();
+
     window.addEventListener("orderly_storage_change", syncData);
     return () => window.removeEventListener("orderly_storage_change", syncData);
   }, []);

@@ -22,7 +22,7 @@ import {
   ChevronRight,
   Users,
 } from "lucide-react";
-import { getLocalState } from "@/lib/store";
+import { getLocalState, saveLocalState } from "@/lib/store";
 import { Restaurant } from "@/types/database";
 import { getCurrentLocalUser, logoutBusiness } from "@/lib/auth-service";
 import { playOrderReceivedBell } from "@/lib/audio-notifications";
@@ -127,6 +127,63 @@ export default function DashboardLayout({
     };
 
     syncState();
+
+    // Sync active local state to server demo store (for demo mode / multi-device preview)
+    const syncServerState = async () => {
+      const state = getLocalState();
+      if (state.restaurant && state.restaurant.name !== "Sunrise Bistro") {
+        try {
+          await fetch("/api/restaurants", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              syncState: true,
+              restaurant: state.restaurant,
+              categories: state.categories,
+              menuItems: state.menuItems,
+              tables: state.tables,
+            }),
+          });
+        } catch {}
+      }
+    };
+    syncServerState();
+
+    // Fetch authoritative restaurant from Supabase via /api/restaurants
+    // and sync into localStorage so all dashboard pages get the correct data
+    const syncFromSupabase = async () => {
+      try {
+        const restRes = await fetch("/api/restaurants");
+        if (restRes.ok) {
+          const restData = await restRes.json();
+          if (restData.success && restData.restaurant) {
+            const authRest = restData.restaurant;
+            setRestaurant(authRest);
+
+            const state = getLocalState();
+            if (state.restaurant.id !== authRest.id) {
+              state.restaurant = authRest;
+              saveLocalState(state);
+            }
+
+            // Also sync tables so preview token is correct
+            const tblRes = await fetch(`/api/tables?restaurant_id=${authRest.id}`);
+            if (tblRes.ok) {
+              const tblData = await tblRes.json();
+              if (tblData.tables && tblData.tables.length > 0) {
+                setPreviewToken(tblData.tables[0].token);
+                const freshState = getLocalState();
+                freshState.tables = tblData.tables;
+                saveLocalState(freshState);
+              }
+            }
+          }
+        }
+      } catch (err) {
+        console.warn("[Dashboard Layout] Non-blocking: Supabase restaurant sync failed:", err);
+      }
+    };
+    syncFromSupabase();
 
     // Check current local or Supabase user
     const localUser = getCurrentLocalUser();
@@ -299,7 +356,7 @@ export default function DashboardLayout({
         {/* Sidebar Footer - Restaurant Info */}
         <div className="p-3" style={{ borderTop: '1px solid #1e3a2a' }}>
           <Link
-            href={`/r/${restaurant?.slug || "sunrise-bistro"}/${previewToken}`}
+            href={restaurant?.slug ? `/r/${restaurant.slug}/${previewToken}` : "#"}
             target="_blank"
             className="flex items-center gap-3 px-3 py-2.5 rounded-xl transition-all duration-150"
             style={{ background: '#1a3d28', border: '1px solid #245236' }}
@@ -312,7 +369,7 @@ export default function DashboardLayout({
               )}
             </div>
             <div className="min-w-0 flex-1">
-              <div className="text-xs font-bold text-white truncate">{restaurant?.name || "Sunrise Bistro"}</div>
+              <div className="text-xs font-bold text-white truncate">{restaurant?.name || "Your Restaurant"}</div>
               <div className="text-[11px] font-medium" style={{ color: '#6b8a75' }}>View Customer Menu</div>
             </div>
             <ExternalLink className="h-3.5 w-3.5 shrink-0" style={{ color: '#52b788' }} />
@@ -436,7 +493,7 @@ export default function DashboardLayout({
                       Account & Settings
                     </Link>
                     <Link
-                      href={`/r/${restaurant?.slug || "sunrise-bistro"}/${previewToken}`}
+                      href={restaurant?.slug ? `/r/${restaurant.slug}/${previewToken}` : "#"}
                       target="_blank"
                       onClick={() => setUserMenuOpen(false)}
                       className="flex items-center gap-2.5 px-3 py-2 rounded-xl text-xs font-medium text-gray-700 hover:bg-[#faf7f2] transition"

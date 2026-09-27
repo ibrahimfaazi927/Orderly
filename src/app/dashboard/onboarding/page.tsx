@@ -27,7 +27,7 @@ function OnboardingContent() {
   const [name, setName] = useState(initialName);
   const [businessType, setBusinessType] = useState<BusinessType>(initialType);
   const [slug, setSlug] = useState(
-    initialName.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "") || "artisan-bites"
+    initialName.toLowerCase().replace(/[^a-z0-9]/g, "") || "katihouse"
   );
   const [phone, setPhone] = useState("+91 98765 43210");
   const [currency, setCurrency] = useState("INR");
@@ -37,62 +37,119 @@ function OnboardingContent() {
 
   const handleNameChange = (val: string) => {
     setName(val);
-    setSlug(val.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, ""));
+    setSlug(val.toLowerCase().replace(/[^a-z0-9]/g, ""));
   };
 
-  const handleSubmit = (e: React.FormEvent) => {
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setLoading(true);
 
-    const newRestaurantId = `rest-${Date.now()}`;
+    const cleanSlug = (slug || name)
+      .toLowerCase()
+      .replace(/[^a-z0-9-]/g, "")
+      .replace(/^-|-$/g, "");
 
-    // Create a fresh business state with selected business_type
+    const initialCategoryName =
+      businessType === "ICE_CREAM"
+        ? "Signature Scoops"
+        : businessType === "CAFE"
+        ? "Artisan Brews"
+        : "Chef's Specials";
+
+    let dbRestaurant: any = null;
+    let dbCategories: any[] = [];
+    let dbTables: any[] = [];
+
+    // 1. Authoritative Supabase Creation
+    try {
+      const res = await fetch("/api/restaurants", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          name: name.trim(),
+          slug: cleanSlug,
+          business_type: businessType,
+          phone: phone.trim(),
+          currency,
+          tax_rate: Number(taxRate),
+          address: address.trim(),
+          initialCategory: initialCategoryName,
+        }),
+      });
+
+      if (res.ok) {
+        const data = await res.json();
+        if (data.success && data.restaurant) {
+          dbRestaurant = data.restaurant;
+          dbCategories = data.categories || [];
+          dbTables = data.tables || [];
+        }
+      }
+    } catch (err) {
+      console.warn("[Onboarding] Supabase creation fallback:", err);
+    }
+
+    // 2. Prepare client-side state cache with authoritative IDs
+    const restaurantId =
+      dbRestaurant?.id ||
+      (typeof crypto !== "undefined" && crypto.randomUUID ? crypto.randomUUID() : `rest-${Date.now()}`);
+
     const freshState = {
-      restaurant: {
-        id: newRestaurantId,
-        name,
-        slug,
+      restaurant: dbRestaurant || {
+        id: restaurantId,
+        name: name.trim(),
+        slug: cleanSlug,
         business_type: businessType,
-        phone,
+        phone: phone.trim(),
         currency,
         tax_rate: Number(taxRate),
-        address,
+        address: address.trim(),
         is_active: true,
         created_at: new Date().toISOString(),
         updated_at: new Date().toISOString(),
       },
-      categories: [
-        {
-          id: `cat-${Date.now()}-1`,
-          restaurant_id: newRestaurantId,
-          name: businessType === "ICE_CREAM" ? "Signature Scoops" : businessType === "CAFE" ? "Artisan Brews" : "Chef's Specials",
-          sort_order: 1,
-          is_active: true,
-          created_at: new Date().toISOString(),
-          updated_at: new Date().toISOString(),
-        }
-      ],
+      categories:
+        dbCategories.length > 0
+          ? dbCategories
+          : [
+              {
+                id:
+                  typeof crypto !== "undefined" && crypto.randomUUID
+                    ? crypto.randomUUID()
+                    : `cat-${Date.now()}-1`,
+                restaurant_id: restaurantId,
+                name: initialCategoryName,
+                sort_order: 1,
+                is_active: true,
+                created_at: new Date().toISOString(),
+                updated_at: new Date().toISOString(),
+              },
+            ],
       menuItems: [],
-      tables: [
-        {
-          id: `tbl-${Date.now()}-1`,
-          restaurant_id: newRestaurantId,
-          table_number: "01",
-          token: `tbl_${Math.random().toString(36).substring(2, 9).toUpperCase()}`,
-          capacity: 4,
-          is_active: true,
-          created_at: new Date().toISOString(),
-        }
-      ],
+      tables:
+        dbTables.length > 0
+          ? dbTables
+          : [
+              {
+                id:
+                  typeof crypto !== "undefined" && crypto.randomUUID
+                    ? crypto.randomUUID()
+                    : `tbl-${Date.now()}-1`,
+                restaurant_id: restaurantId,
+                table_number: "01",
+                token: `tbl_${Math.random().toString(36).substring(2, 9).toUpperCase()}`,
+                capacity: 4,
+                is_active: true,
+                created_at: new Date().toISOString(),
+              },
+            ],
       orders: [],
       payments: [],
     };
 
     saveLocalState(freshState as any);
 
-    setTimeout(() => {
-      router.push("/dashboard");
-    }, 400);
+    router.push("/dashboard");
   };
 
   return (

@@ -283,16 +283,21 @@ export function updateMenuItemPrice(itemId: string, newPrice: number): boolean {
 // -------------------------------------------------------------
 // TABLE MANAGEMENT
 // -------------------------------------------------------------
-export function addTable(tableNumber: string): RestaurantTable {
+export function addTable(tableNumber: string, customId?: string, customToken?: string): RestaurantTable {
   const state = getLocalState();
   const chars = "23456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnpqrstuvwxyz";
-  let token = "tbl_";
-  for (let i = 0; i < 7; i++) {
-    token += chars.charAt(Math.floor(Math.random() * chars.length));
+  let token = customToken;
+  if (!token) {
+    token = "tbl_";
+    for (let i = 0; i < 7; i++) {
+      token += chars.charAt(Math.floor(Math.random() * chars.length));
+    }
   }
 
+  const id = customId || (typeof crypto !== "undefined" && crypto.randomUUID ? crypto.randomUUID() : `tbl-${Date.now()}`);
+
   const newTable: RestaurantTable = {
-    id: `tbl-${Date.now()}`,
+    id,
     restaurant_id: state.restaurant.id,
     table_number: tableNumber.trim(),
     token: token,
@@ -301,7 +306,12 @@ export function addTable(tableNumber: string): RestaurantTable {
     updated_at: new Date().toISOString(),
   };
 
-  state.tables.push(newTable);
+  const existingIdx = state.tables.findIndex((t) => t.id === id);
+  if (existingIdx >= 0) {
+    state.tables[existingIdx] = newTable;
+  } else {
+    state.tables.push(newTable);
+  }
   saveLocalState(state);
   return newTable;
 }

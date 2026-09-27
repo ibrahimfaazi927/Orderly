@@ -2,6 +2,12 @@ import { NextResponse } from "next/server";
 import { createClient } from "@/lib/supabase/server";
 import { getPaymentProvider } from "@/lib/payments";
 import { MOCK_RESTAURANT, MOCK_MENU_ITEMS, MOCK_TABLES } from "@/lib/data/mock-data";
+import {
+  findDemoRestaurant,
+  getDemoMenuItems,
+  getDemoTables,
+  findDemoTable,
+} from "@/lib/server-demo-store";
 import { logger } from "@/lib/logger";
 
 export async function POST(request: Request) {
@@ -25,11 +31,13 @@ export async function POST(request: Request) {
     if (!isPlaceholder) {
       supabase = await createClient();
 
-      // 1. Authoritative Restaurant Lookup by slug (case-insensitive) or UUID
+      // 1. Authoritative Restaurant Lookup by slug (case-insensitive, with/without hyphen) or UUID
+      const noHyphen = cleanSlug.replace(/-/g, "");
       let { data: dbRestaurant } = await supabase
         .from("restaurants")
         .select("*")
-        .ilike("slug", cleanSlug)
+        .or(`slug.ilike.${cleanSlug},slug.ilike.${noHyphen}`)
+        .limit(1)
         .maybeSingle();
 
       if (!dbRestaurant) {
@@ -98,11 +106,15 @@ export async function POST(request: Request) {
       }
     } else {
       // Mock / Demo Mode
-      restaurant =
-        cleanSlug === MOCK_RESTAURANT.slug ? MOCK_RESTAURANT : { ...MOCK_RESTAURANT, slug: cleanSlug };
+      const demoRest = findDemoRestaurant(cleanSlug);
+      restaurant = demoRest || { ...MOCK_RESTAURANT, slug: cleanSlug };
+      const demoTables = restaurant?.id ? getDemoTables(restaurant.id) : [];
       table = tableToken
-        ? MOCK_TABLES.find((t) => t.token === tableToken) || MOCK_TABLES[0]
-        : MOCK_TABLES[0];
+        ? (restaurant?.id ? findDemoTable(restaurant.id, tableToken) : null) ||
+          demoTables.find((t) => t.token === tableToken || t.id === tableToken) ||
+          MOCK_TABLES.find((t) => t.token === tableToken) ||
+          MOCK_TABLES[0]
+        : demoTables[0] || MOCK_TABLES[0];
     }
 
     if (table && table.is_active === false) {
@@ -153,9 +165,22 @@ export async function POST(request: Request) {
         }
       }
     } else {
-      menuItems = MOCK_MENU_ITEMS.filter((m) => itemIds.includes(m.id));
-      if (menuItems.length === 0) {
-        menuItems = MOCK_MENU_ITEMS;
+      const demoItems = restaurant?.id ? getDemoMenuItems(restaurant.id) : [];
+      menuItems = demoItems.length > 0 ? [...demoItems] : [...MOCK_MENU_ITEMS];
+      // If still missing items and cart items provide a name or price, allow demo matching
+      for (const cartItem of items) {
+        if (!menuItems.some((m) => m.id === cartItem.itemId)) {
+          if (cartItem.price !== undefined && (cartItem.name || cartItem.itemName)) {
+            menuItems.push({
+              id: cartItem.itemId,
+              restaurant_id: restaurant.id,
+              name: cartItem.name || cartItem.itemName,
+              price: Number(cartItem.price),
+              tax_rate: restaurant.tax_rate || 5,
+              is_available: true,
+            });
+          }
+        }
       }
     }
 

@@ -356,6 +356,60 @@ export async function loginBusiness(
         if (typeof window !== "undefined") {
           localStorage.setItem(CURRENT_USER_KEY, JSON.stringify(existing));
         }
+
+        // Sync the authenticated user's restaurant into orderly_state_v1
+        // so the dashboard loads the correct restaurant instead of mock data
+        try {
+          const restRes = await fetch("/api/restaurants");
+          if (restRes.ok) {
+            const restData = await restRes.json();
+            if (restData.success && restData.restaurant) {
+              const authRestaurant = restData.restaurant;
+              existing.restaurantId = authRestaurant.id;
+              existing.businessName = authRestaurant.name || existing.businessName;
+              if (typeof window !== "undefined") {
+                localStorage.setItem(CURRENT_USER_KEY, JSON.stringify(existing));
+              }
+
+              // Fetch categories, menu items, and tables for this restaurant
+              const [catRes, itemsRes, tblRes] = await Promise.all([
+                fetch(`/api/menu/categories?restaurant_id=${authRestaurant.id}`),
+                fetch(`/api/menu/items?restaurant_id=${authRestaurant.id}`),
+                fetch(`/api/tables?restaurant_id=${authRestaurant.id}`),
+              ]);
+
+              let categories: any[] = [];
+              let menuItems: any[] = [];
+              let tables: any[] = [];
+
+              if (catRes.ok) {
+                const catData = await catRes.json();
+                categories = catData.categories || [];
+              }
+              if (itemsRes.ok) {
+                const itemsData = await itemsRes.json();
+                menuItems = itemsData.items || [];
+              }
+              if (tblRes.ok) {
+                const tblData = await tblRes.json();
+                tables = tblData.tables || [];
+              }
+
+              const freshState = {
+                restaurant: authRestaurant,
+                categories,
+                menuItems,
+                tables,
+                orders: [],
+                payments: [],
+              };
+              saveLocalState(freshState as any);
+            }
+          }
+        } catch (syncErr) {
+          console.warn("[Orderly Auth] Non-blocking: failed to sync restaurant state on login:", syncErr);
+        }
+
         return { success: true, account: existing };
       }
 

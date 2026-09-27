@@ -1,5 +1,12 @@
 import { NextResponse } from "next/server";
 import { createClient } from "@/lib/supabase/server";
+import {
+  saveDemoRestaurant,
+  saveDemoCategory,
+  saveDemoTable,
+  syncFullDemoRestaurant,
+  findDemoRestaurant,
+} from "@/lib/server-demo-store";
 
 export async function GET(request: Request) {
   try {
@@ -8,6 +15,14 @@ export async function GET(request: Request) {
       process.env.NEXT_PUBLIC_SUPABASE_URL.includes("placeholder");
 
     if (isPlaceholder) {
+      const { searchParams } = new URL(request.url);
+      const slug = searchParams.get("slug");
+      if (slug) {
+        const found = findDemoRestaurant(slug);
+        if (found) {
+          return NextResponse.json({ success: true, restaurant: found, source: "demo" });
+        }
+      }
       return NextResponse.json({ success: false, error: "Demo mode" }, { status: 200 });
     }
 
@@ -47,16 +62,18 @@ export async function GET(request: Request) {
       user.user_metadata?.full_name ||
       "Orderly Restaurant";
 
-    const baseSlug = restaurantName
+    const cleanNoHyphen = restaurantName.toLowerCase().replace(/[^a-z0-9]/g, "");
+    const cleanWithHyphen = restaurantName
       .toLowerCase()
       .replace(/[^a-z0-9]+/g, "-")
-      .replace(/^-|-$/g, "") || `rest-${user.id.slice(0, 8)}`;
+      .replace(/^-|-$/g, "");
 
-    // Check if restaurant with this slug already exists
+    // Check if restaurant with this slug already exists (try cleanNoHyphen first, then cleanWithHyphen)
     let { data: existingRest } = await supabase
       .from("restaurants")
       .select("*")
-      .ilike("slug", baseSlug)
+      .or(`slug.ilike.${cleanNoHyphen},slug.ilike.${cleanWithHyphen}`)
+      .limit(1)
       .maybeSingle();
 
     if (existingRest) {
@@ -73,7 +90,8 @@ export async function GET(request: Request) {
       return NextResponse.json({ success: true, restaurant: existingRest, role: "OWNER" });
     }
 
-    // 3. Auto-provision restaurant row if not yet created
+    // 3. Auto-provision restaurant row if not yet created (defaults to unhyphenated clean slug like katihouse)
+    const baseSlug = cleanNoHyphen || `rest-${user.id.slice(0, 8)}`;
     const { data: newRest, error: createError } = await supabase
       .from("restaurants")
       .insert({
@@ -124,12 +142,75 @@ export async function GET(request: Request) {
 
 export async function POST(request: Request) {
   try {
+    const body = await request.json();
+
     const isPlaceholder =
       !process.env.NEXT_PUBLIC_SUPABASE_URL ||
       process.env.NEXT_PUBLIC_SUPABASE_URL.includes("placeholder");
 
     if (isPlaceholder) {
-      return NextResponse.json({ error: "Supabase not configured" }, { status: 400 });
+      if (body.syncState) {
+        syncFullDemoRestaurant(body);
+        return NextResponse.json({ success: true, source: "demo" });
+      }
+
+      const name = (body.name || "").trim();
+      if (!name) {
+        return NextResponse.json({ error: "Restaurant name is required" }, { status: 400 });
+      }
+
+      const cleanSlug = (body.slug || name)
+        .toLowerCase()
+        .replace(/[^a-z0-9-]/g, "")
+        .replace(/^-|-$/g, "");
+
+      const restId = body.id || `rest-${cleanSlug}-${Date.now()}`;
+      const demoRestaurant = {
+        id: restId,
+        name,
+        slug: cleanSlug,
+        business_type: body.business_type || "RESTAURANT",
+        phone: body.phone?.trim() || null,
+        address: body.address?.trim() || null,
+        currency: body.currency || "INR",
+        tax_rate: body.tax_rate !== undefined ? Number(body.tax_rate) : 5,
+        is_active: true,
+        created_at: new Date().toISOString(),
+        updated_at: new Date().toISOString(),
+      };
+      saveDemoRestaurant(demoRestaurant as any);
+
+      const catId = `cat-${Date.now()}`;
+      const demoCat = {
+        id: catId,
+        restaurant_id: restId,
+        name: body.initialCategory || "Chef's Specials",
+        sort_order: 1,
+        is_active: true,
+        created_at: new Date().toISOString(),
+        updated_at: new Date().toISOString(),
+      };
+      saveDemoCategory(demoCat as any);
+
+      const tblId = `tbl-${Date.now()}`;
+      const demoTable = {
+        id: tblId,
+        restaurant_id: restId,
+        table_number: "01",
+        token: `tbl_${Math.random().toString(36).substring(2, 9).toUpperCase()}`,
+        capacity: 4,
+        is_active: true,
+        created_at: new Date().toISOString(),
+      };
+      saveDemoTable(demoTable as any);
+
+      return NextResponse.json({
+        success: true,
+        source: "demo",
+        restaurant: demoRestaurant,
+        categories: [demoCat],
+        tables: [demoTable],
+      });
     }
 
     const supabase = await createClient();
@@ -141,24 +222,108 @@ export async function POST(request: Request) {
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     }
 
-    const body = await request.json();
     const name = (body.name || "").trim();
     if (!name) {
       return NextResponse.json({ error: "Restaurant name is required" }, { status: 400 });
     }
 
-    const slug =
-      (body.slug || name)
-        .toLowerCase()
-        .replace(/[^a-z0-9]+/g, "-")
-        .replace(/^-|-$/g, "") || `rest-${Date.now()}`;
+    // Exact slug entered or derived without unnecessary hyphens (e.g. katihouse)
+    const cleanSlug = (body.slug || name)
+      .toLowerCase()
+      .replace(/[^a-z0-9-]/g, "")
+      .replace(/^-|-$/g, "");
 
-    // Insert restaurant
+    // 1. Check if restaurant with this slug already exists
+    let { data: existingRest } = await supabase
+      .from("restaurants")
+      .select("*")
+      .ilike("slug", cleanSlug)
+      .maybeSingle();
+
+    if (existingRest) {
+      // Update restaurant details & ensure membership
+      const { data: updatedRest } = await supabase
+        .from("restaurants")
+        .update({
+          name,
+          phone: body.phone?.trim() || existingRest.phone,
+          address: body.address?.trim() || existingRest.address,
+          currency: body.currency || existingRest.currency,
+          tax_rate: body.tax_rate !== undefined ? Number(body.tax_rate) : existingRest.tax_rate,
+          is_active: true,
+          updated_at: new Date().toISOString(),
+        })
+        .eq("id", existingRest.id)
+        .select()
+        .single();
+
+      await supabase.from("restaurant_members").upsert(
+        {
+          restaurant_id: existingRest.id,
+          user_id: user.id,
+          role: "OWNER",
+        },
+        { onConflict: "restaurant_id,user_id" }
+      );
+
+      // Ensure at least one table exists
+      let { data: table } = await supabase
+        .from("restaurant_tables")
+        .select("*")
+        .eq("restaurant_id", existingRest.id)
+        .limit(1)
+        .maybeSingle();
+
+      if (!table) {
+        const { data: newTbl } = await supabase
+          .from("restaurant_tables")
+          .insert({
+            restaurant_id: existingRest.id,
+            table_number: "01",
+            token: `tbl_${Math.random().toString(36).substring(2, 9).toUpperCase()}`,
+            is_active: true,
+          })
+          .select()
+          .single();
+        table = newTbl;
+      }
+
+      // Ensure at least one category exists
+      let { data: category } = await supabase
+        .from("categories")
+        .select("*")
+        .eq("restaurant_id", existingRest.id)
+        .limit(1)
+        .maybeSingle();
+
+      if (!category) {
+        const { data: newCat } = await supabase
+          .from("categories")
+          .insert({
+            restaurant_id: existingRest.id,
+            name: body.initialCategory || "Chef's Specials",
+            sort_order: 1,
+            is_active: true,
+          })
+          .select()
+          .single();
+        category = newCat;
+      }
+
+      return NextResponse.json({
+        success: true,
+        restaurant: updatedRest || existingRest,
+        categories: category ? [category] : [],
+        tables: table ? [table] : [],
+      });
+    }
+
+    // 2. Insert restaurant if it doesn't exist yet
     const { data: restaurant, error: restError } = await supabase
       .from("restaurants")
       .insert({
         name,
-        slug,
+        slug: cleanSlug,
         phone: body.phone?.trim() || null,
         address: body.address?.trim() || null,
         currency: body.currency || "INR",
@@ -180,22 +345,38 @@ export async function POST(request: Request) {
     });
 
     // Create initial table
-    await supabase.from("restaurant_tables").insert({
-      restaurant_id: restaurant.id,
-      table_number: "01",
-      token: `tbl_${Math.random().toString(36).substring(2, 9).toUpperCase()}`,
-      is_active: true,
-    });
+    const { data: createdTable } = await supabase
+      .from("restaurant_tables")
+      .insert({
+        restaurant_id: restaurant.id,
+        table_number: "01",
+        token: `tbl_${Math.random().toString(36).substring(2, 9).toUpperCase()}`,
+        is_active: true,
+      })
+      .select()
+      .single();
 
     // Create initial category
-    await supabase.from("categories").insert({
-      restaurant_id: restaurant.id,
-      name: body.initialCategory || "Chef's Specials",
-      sort_order: 1,
-      is_active: true,
-    });
+    const { data: createdCategory } = await supabase
+      .from("categories")
+      .insert({
+        restaurant_id: restaurant.id,
+        name: body.initialCategory || "Chef's Specials",
+        sort_order: 1,
+        is_active: true,
+      })
+      .select()
+      .single();
 
-    return NextResponse.json({ success: true, restaurant }, { status: 201 });
+    return NextResponse.json(
+      {
+        success: true,
+        restaurant,
+        categories: createdCategory ? [createdCategory] : [],
+        tables: createdTable ? [createdTable] : [],
+      },
+      { status: 201 }
+    );
   } catch (err: any) {
     return NextResponse.json(
       { error: err?.message || "Failed to create restaurant" },

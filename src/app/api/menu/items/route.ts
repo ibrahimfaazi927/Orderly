@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { createClient } from "@/lib/supabase/server";
+import { getDemoMenuItems, saveDemoMenuItem } from "@/lib/server-demo-store";
 
 // GET menu items with optional restaurant_id and category_id filters
 export async function GET(request: Request) {
@@ -9,6 +10,18 @@ export async function GET(request: Request) {
 
   if (!restaurantId) {
     return NextResponse.json({ error: "restaurant_id is required" }, { status: 400 });
+  }
+
+  const isPlaceholder =
+    !process.env.NEXT_PUBLIC_SUPABASE_URL ||
+    process.env.NEXT_PUBLIC_SUPABASE_URL.includes("placeholder");
+
+  if (isPlaceholder) {
+    let items = getDemoMenuItems(restaurantId);
+    if (categoryId) {
+      items = items.filter((i) => i.category_id === categoryId);
+    }
+    return NextResponse.json({ items });
   }
 
   const supabase = await createClient();
@@ -46,41 +59,62 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: "A valid price is required" }, { status: 400 });
   }
 
+  const isPlaceholder =
+    !process.env.NEXT_PUBLIC_SUPABASE_URL ||
+    process.env.NEXT_PUBLIC_SUPABASE_URL.includes("placeholder");
+
+  if (isPlaceholder) {
+    const existing = getDemoMenuItems(body.restaurant_id);
+    const newItem = {
+      id: body.id || `item-${Date.now()}`,
+      restaurant_id: body.restaurant_id,
+      category_id: body.category_id,
+      name: body.name.trim(),
+      description: body.description?.trim() || null,
+      image_url: body.image_url?.trim() || null,
+      price: Number(body.price),
+      tax_rate: body.tax_rate !== undefined ? Number(body.tax_rate) : 5.0,
+      is_available: body.is_available !== undefined ? body.is_available : true,
+      dietary_type: body.dietary_type || "VEG",
+      sort_order: existing.length + 1,
+      created_at: new Date().toISOString(),
+      updated_at: new Date().toISOString(),
+    };
+    saveDemoMenuItem(newItem as any);
+    return NextResponse.json({ item: newItem }, { status: 201 });
+  }
+
   const supabase = await createClient();
+  const { data: { user } } = await supabase.auth.getUser();
+  if (!user) {
+    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  }
 
-  const isPlaceholder = !process.env.NEXT_PUBLIC_SUPABASE_URL || process.env.NEXT_PUBLIC_SUPABASE_URL.includes("placeholder");
-  if (!isPlaceholder) {
-    const { data: { user } } = await supabase.auth.getUser();
-    if (!user) {
-      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-    }
+  let { data: membership } = await supabase
+    .from("restaurant_members")
+    .select("role")
+    .eq("restaurant_id", body.restaurant_id)
+    .eq("user_id", user.id)
+    .maybeSingle();
 
-    let { data: membership } = await supabase
-      .from("restaurant_members")
-      .select("role")
-      .eq("restaurant_id", body.restaurant_id)
-      .eq("user_id", user.id)
-      .maybeSingle();
+  if (!membership) {
+    // Auto-link authenticated user as OWNER to this restaurant if not already present
+    await supabase.from("restaurant_members").upsert(
+      {
+        restaurant_id: body.restaurant_id,
+        user_id: user.id,
+        role: "OWNER",
+      },
+      { onConflict: "restaurant_id,user_id" }
+    );
+    membership = { role: "OWNER" };
+  }
 
-    if (!membership) {
-      // Auto-link authenticated user as OWNER to this restaurant if not already present
-      await supabase.from("restaurant_members").upsert(
-        {
-          restaurant_id: body.restaurant_id,
-          user_id: user.id,
-          role: "OWNER",
-        },
-        { onConflict: "restaurant_id,user_id" }
-      );
-      membership = { role: "OWNER" };
-    }
-
-    if (!membership || !["OWNER", "MANAGER"].includes(membership.role)) {
-      return NextResponse.json(
-        { error: "Forbidden: You do not have permissions to manage menu items for this restaurant" },
-        { status: 403 }
-      );
-    }
+  if (!membership || !["OWNER", "MANAGER"].includes(membership.role)) {
+    return NextResponse.json(
+      { error: "Forbidden: You do not have permissions to manage menu items for this restaurant" },
+      { status: 403 }
+    );
   }
 
   const { count } = await supabase

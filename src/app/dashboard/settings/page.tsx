@@ -98,7 +98,12 @@ export default function SettingsDashboardPage() {
       return;
     }
 
-    const senderEmail = currentEmail || "owner@sunrisebistro.in";
+    const senderEmail = currentEmail;
+    if (!senderEmail) {
+      setOtpError("Unable to identify current account email. Please refresh the page.");
+      setEmailDeliveryStatus(null);
+      return;
+    }
     const { otp } = generateEmailChangeOtp(senderEmail, targetEmail);
     setDemoOtp(otp);
     setOtpStatus("sent");
@@ -126,7 +131,7 @@ export default function SettingsDashboardPage() {
       return;
     }
 
-    const result = verifyEmailChangeOtp(currentEmail || "owner@sunrisebistro.in", otpCode.trim());
+    const result = verifyEmailChangeOtp(currentEmail, otpCode.trim());
     if (!result.valid) {
       setOtpError(result.error || "Invalid verification code. Please try again.");
       return;
@@ -242,7 +247,7 @@ export default function SettingsDashboardPage() {
     setAccountSaving(true);
     try {
       const res = await updateAccountCredentials({
-        currentEmail: currentEmail || "owner@sunrisebistro.in",
+        currentEmail: currentEmail,
         newEmail: newEmail.trim() ? newEmail.trim() : undefined,
         currentPassword: currentPassword ? currentPassword : undefined,
         newPassword: newPassword.trim() ? newPassword.trim() : undefined,
@@ -379,7 +384,7 @@ export default function SettingsDashboardPage() {
                     Current Login Email
                   </div>
                   <div className="text-sm font-bold text-slate-900 mt-0.5 font-mono">
-                    {currentEmail || "owner@sunrisebistro.in"}
+                    {currentEmail || "Not logged in"}
                   </div>
                   <div className="text-[11px] text-slate-500 mt-0.5">
                     Restaurant: <span className="font-semibold text-slate-700">{businessName || "Your Registered Business"}</span>
@@ -400,7 +405,7 @@ export default function SettingsDashboardPage() {
                       Change Login Email Address
                     </label>
                     <p className="text-[11px] text-slate-500">
-                      Requires one-time OTP verification sent to your existing login email (<span className="font-mono text-slate-700 font-medium">{currentEmail || "owner@sunrisebistro.in"}</span>).
+                      Requires one-time OTP verification sent to your existing login email (<span className="font-mono text-slate-700 font-medium">{currentEmail || "current email"}</span>).
                     </p>
                   </div>
                   {otpStatus === "verified" && (
@@ -463,9 +468,9 @@ export default function SettingsDashboardPage() {
                           </div>
                           <div className="text-[11px] text-slate-600">
                             {emailDeliveryStatus === "delivered" ? (
-                              <>Check your inbox at <span className="font-semibold text-slate-900">{currentEmail || "owner@sunrisebistro.in"}</span> (also check spam folder)</>
+                              <>Check your inbox at <span className="font-semibold text-slate-900">{currentEmail}</span> (also check spam folder)</>
                             ) : (
-                              <>Enter the 6-digit code for <span className="font-semibold text-slate-900">{currentEmail || "owner@sunrisebistro.in"}</span></>
+                              <>Enter the 6-digit code for <span className="font-semibold text-slate-900">{currentEmail}</span></>
                             )}
                           </div>
                         </div>
@@ -974,7 +979,7 @@ export default function SettingsDashboardPage() {
                 <input
                   type="email"
                   required
-                  placeholder="meera@sunrisebistro.in"
+                  placeholder="staff@example.com"
                   value={inviteEmail}
                   onChange={(e) => setInviteEmail(e.target.value)}
                   className="w-full text-xs rounded-xl border border-slate-300 px-3.5 py-2.5 text-slate-900 focus:outline-none focus:border-emerald-500"

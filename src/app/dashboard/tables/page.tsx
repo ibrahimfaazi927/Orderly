@@ -5,6 +5,7 @@ import Link from "next/link";
 import QRCode from "qrcode";
 import {
   getLocalState,
+  saveLocalState,
   addTable,
   updateTable,
   deleteTable,
@@ -56,10 +57,39 @@ export default function TablesManagementPage() {
     setTimeout(() => setToast(null), 2500);
   };
 
-  const sync = useCallback(() => {
+  const [restaurantId, setRestaurantId] = useState<string>("");
+
+  const sync = useCallback(async () => {
     const state = getLocalState();
     setTables(state.tables || []);
     setRestaurant(state.restaurant);
+    let currentRestId = state.restaurant?.id || "";
+    setRestaurantId(currentRestId);
+
+    try {
+      const restRes = await fetch("/api/restaurants");
+      if (restRes.ok) {
+        const restData = await restRes.json();
+        if (restData.success && restData.restaurant) {
+          const authorRest = restData.restaurant;
+          currentRestId = authorRest.id;
+          setRestaurantId(authorRest.id);
+          setRestaurant(authorRest);
+
+          const tblRes = await fetch(`/api/tables?restaurant_id=${authorRest.id}`);
+          if (tblRes.ok) {
+            const tblData = await tblRes.json();
+            if (tblData.tables && tblData.tables.length > 0) {
+              setTables(tblData.tables);
+              state.tables = tblData.tables;
+              saveLocalState(state);
+            }
+          }
+        }
+      }
+    } catch (err) {
+      console.warn("[Tables Page] Supabase sync fallback:", err);
+    }
   }, []);
 
   useEffect(() => {
@@ -72,7 +102,7 @@ export default function TablesManagementPage() {
   // Generate real dynamic QR code data URLs for all tables
   useEffect(() => {
     if (!tables.length) return;
-    const slug = restaurant?.slug || "sunrise-bistro";
+    const slug = restaurant?.slug || "";
     const base = origin || "http://localhost:3000";
 
     const generateAll = async () => {
@@ -99,44 +129,96 @@ export default function TablesManagementPage() {
     generateAll();
   }, [tables, restaurant, origin]);
 
-  const handleCreate = (e: React.FormEvent) => {
+  const handleCreate = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!newTableNum.trim()) return;
-    const created = addTable(newTableNum);
+
+    const targetRestId = restaurantId || getLocalState().restaurant.id;
+    let createdTable: any = null;
+
+    try {
+      const res = await fetch("/api/tables", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          restaurant_id: targetRestId,
+          table_number: newTableNum.trim(),
+        }),
+      });
+      if (res.ok) {
+        const data = await res.json();
+        createdTable = data.table;
+      }
+    } catch {}
+
+    const created = createdTable
+      ? addTable(createdTable.table_number, createdTable.id, createdTable.token)
+      : addTable(newTableNum);
+
     setNewTableNum("");
     setShowAddModal(false);
     showToast(`"${created.table_number}" created with secure token`);
   };
 
-  const handleUpdate = (e: React.FormEvent) => {
+  const handleUpdate = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!editingTable || !editTableNum.trim()) return;
+
+    try {
+      await fetch(`/api/tables/${editingTable.id}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ table_number: editTableNum.trim() }),
+      });
+    } catch {}
+
     updateTable(editingTable.id, editTableNum);
     showToast(`Table renamed to "${editTableNum}"`);
     setEditingTable(null);
   };
 
-  const handleDelete = () => {
+  const handleDelete = async () => {
     if (!deleteTarget) return;
+
+    try {
+      await fetch(`/api/tables/${deleteTarget.id}`, { method: "DELETE" });
+    } catch {}
+
     deleteTable(deleteTarget.id);
     showToast(`"${deleteTarget.table_number}" removed`);
     setDeleteTarget(null);
   };
 
-  const handleRegenerate = (table: RestaurantTable) => {
+  const handleRegenerate = async (table: RestaurantTable) => {
     if (confirm(`Regenerate QR token for ${table.table_number}? The previous QR code will immediately stop working.`)) {
-      regenerateTableToken(table.id);
+      const newToken = regenerateTableToken(table.id);
+      if (newToken) {
+        try {
+          await fetch(`/api/tables/${table.id}`, {
+            method: "PATCH",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ token: newToken }),
+          });
+        } catch {}
+      }
       showToast(`New secure token generated for ${table.table_number}`);
     }
   };
 
-  const handleToggle = (table: RestaurantTable) => {
+  const handleToggle = async (table: RestaurantTable) => {
     const active = toggleTableStatus(table.id);
+    try {
+      await fetch(`/api/tables/${table.id}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ is_active: active }),
+      });
+    } catch {}
     showToast(`${table.table_number} is now ${active ? "active" : "inactive"}`);
   };
 
   const copyUrl = (table: RestaurantTable) => {
-    const slug = restaurant?.slug || "sunrise-bistro";
+    const slug = restaurant?.slug || "";
     const base = origin || "http://localhost:3000";
     const url = `${base}/r/${slug}/${table.token}`;
     navigator.clipboard.writeText(url);
@@ -205,7 +287,7 @@ export default function TablesManagementPage() {
       {/* Tables Grid */}
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-5 print:hidden">
         {tables.map((table) => {
-          const slug = restaurant?.slug || "sunrise-bistro";
+          const slug = restaurant?.slug || "";
           const tableUrl = `/r/${slug}/${table.token}`;
           const qrDataUrl = qrMap[table.id];
 

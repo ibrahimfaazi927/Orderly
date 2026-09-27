@@ -1,6 +1,13 @@
 import { NextResponse } from "next/server";
 import { createClient } from "@/lib/supabase/server";
 import { MOCK_RESTAURANT, MOCK_CATEGORIES, MOCK_MENU_ITEMS, MOCK_TABLES } from "@/lib/data/mock-data";
+import {
+  findDemoRestaurant,
+  getDemoCategories,
+  getDemoMenuItems,
+  getDemoTables,
+  findDemoTable,
+} from "@/lib/server-demo-store";
 
 export async function GET(request: Request) {
   try {
@@ -20,11 +27,13 @@ export async function GET(request: Request) {
     if (!isPlaceholder) {
       const supabase = await createClient();
 
-      // 1. Authoritative Restaurant Lookup by slug (case-insensitive) or UUID
+      // 1. Authoritative Restaurant Lookup by slug (case-insensitive, with/without hyphen) or UUID
+      const noHyphen = cleanSlug.replace(/-/g, "");
       let { data: restaurant } = await supabase
         .from("restaurants")
         .select("*")
-        .ilike("slug", cleanSlug)
+        .or(`slug.ilike.${cleanSlug},slug.ilike.${noHyphen}`)
+        .limit(1)
         .maybeSingle();
 
       if (!restaurant) {
@@ -109,19 +118,60 @@ export async function GET(request: Request) {
       );
     }
 
-    // Supabase is not configured (Mock / Local Demo Mode)
-    const mockTable = tableToken
-      ? MOCK_TABLES.find((t) => t.token === tableToken) || MOCK_TABLES[0]
-      : MOCK_TABLES[0];
+    // -------------------------------------------------------------
+    // DEMO / LOCAL STORE MODE (When Supabase is not configured)
+    // -------------------------------------------------------------
+    const demoRest = findDemoRestaurant(cleanSlug);
+    if (demoRest) {
+      const categories = getDemoCategories(demoRest.id);
+      const menuItems = getDemoMenuItems(demoRest.id);
+      const tables = getDemoTables(demoRest.id);
+      const matchedTable = tableToken
+        ? findDemoTable(demoRest.id, tableToken) ||
+          tables.find((t) => t.token === tableToken || t.id === tableToken)
+        : null;
 
-    return NextResponse.json({
-      success: true,
-      source: "mock",
-      restaurant: { ...MOCK_RESTAURANT, slug: cleanSlug || MOCK_RESTAURANT.slug },
-      categories: MOCK_CATEGORIES,
-      menuItems: MOCK_MENU_ITEMS,
-      table: mockTable,
-    });
+      const finalTable =
+        matchedTable ||
+        tables[0] || {
+          id: `tbl-${Date.now()}`,
+          restaurant_id: demoRest.id,
+          table_number: "Table 01",
+          token: tableToken || "tbl_01",
+          is_active: true,
+        };
+
+      return NextResponse.json({
+        success: true,
+        source: "demo",
+        restaurant: demoRest,
+        categories: categories || [],
+        menuItems: menuItems || [],
+        table: finalTable,
+      });
+    }
+
+    // Only return Sunrise Bistro mock if the user explicitly requested sunrise-bistro
+    if (cleanSlug === "sunrise-bistro" || cleanSlug === "sunrise" || cleanSlug === "rest-sunrise-bistro-001") {
+      const mockTable = tableToken
+        ? MOCK_TABLES.find((t) => t.token === tableToken) || MOCK_TABLES[0]
+        : MOCK_TABLES[0];
+
+      return NextResponse.json({
+        success: true,
+        source: "mock",
+        restaurant: MOCK_RESTAURANT,
+        categories: MOCK_CATEGORIES,
+        menuItems: MOCK_MENU_ITEMS,
+        table: mockTable,
+      });
+    }
+
+    // Not found in demo store either
+    return NextResponse.json(
+      { error: `Restaurant "${rawSlug}" not found.` },
+      { status: 404 }
+    );
   } catch (err: any) {
     return NextResponse.json(
       { error: err?.message || "Failed to load public restaurant menu" },
