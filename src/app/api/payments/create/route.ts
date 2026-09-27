@@ -128,15 +128,22 @@ export async function POST(request: Request) {
     const itemIds = items.map((i: any) => i.itemId).filter(Boolean);
     let menuItems: any[] = [];
 
-    if (!isPlaceholder && restaurant?.id) {
-      const { data: dbItems } = await supabase
-        .from("menu_items")
-        .select("*")
-        .in("id", itemIds)
-        .eq("restaurant_id", restaurant.id);
+    const isUUID = (str: any) =>
+      typeof str === "string" &&
+      /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(str);
 
-      if (dbItems && dbItems.length > 0) {
-        menuItems = dbItems;
+    if (!isPlaceholder && restaurant?.id) {
+      const uuidItemIds = itemIds.filter(isUUID);
+      if (uuidItemIds.length > 0) {
+        const { data: dbItems } = await supabase
+          .from("menu_items")
+          .select("*")
+          .in("id", uuidItemIds)
+          .eq("restaurant_id", restaurant.id);
+
+        if (dbItems && dbItems.length > 0) {
+          menuItems = dbItems;
+        }
       }
 
       // If some items were not matched by ID, try matching by name within this restaurant
@@ -173,10 +180,10 @@ export async function POST(request: Request) {
           if (cartItem.price !== undefined && (cartItem.name || cartItem.itemName)) {
             menuItems.push({
               id: cartItem.itemId,
-              restaurant_id: restaurant.id,
+              restaurant_id: restaurant?.id || "demo",
               name: cartItem.name || cartItem.itemName,
               price: Number(cartItem.price),
-              tax_rate: restaurant.tax_rate || 5,
+              tax_rate: restaurant?.tax_rate || 5,
               is_available: true,
             });
           }
@@ -197,10 +204,29 @@ export async function POST(request: Request) {
       }
 
       if (!match) {
-        return NextResponse.json(
-          { error: `Item "${cartItem.itemId}" is invalid or does not belong to this restaurant` },
-          { status: 400 }
-        );
+        // In demo mode or if client-created items (e.g. item-...) aren't persisted server-side,
+        // accept client-sent item data if valid price and name are provided
+        const isClientDemoItem =
+          isPlaceholder ||
+          process.env.NEXT_PUBLIC_ENABLE_DEMO_MODE === "true" ||
+          String(cartItem.itemId).startsWith("item-") ||
+          !isUUID(cartItem.itemId);
+
+        if (isClientDemoItem && cartItem.price !== undefined && (cartItem.name || cartItem.itemName)) {
+          match = {
+            id: cartItem.itemId,
+            restaurant_id: restaurant?.id || "demo",
+            name: cartItem.name || cartItem.itemName,
+            price: Number(cartItem.price),
+            tax_rate: restaurant?.tax_rate || 5,
+            is_available: true,
+          };
+        } else {
+          return NextResponse.json(
+            { error: `Item "${cartItem.itemId}" is invalid or does not belong to this restaurant` },
+            { status: 400 }
+          );
+        }
       }
 
       if (match.is_available === false) {
@@ -252,7 +278,7 @@ export async function POST(request: Request) {
     );
     const calculatedTotal = Number((calculatedSubtotal + calculatedTax).toFixed(2));
     const orderNumber = `ORD-${Math.floor(1000 + Math.random() * 9000)}`;
-    const orderId = typeof crypto !== "undefined" && crypto.randomUUID ? crypto.randomUUID() : `ord-${Date.now()}`;
+    const orderId = typeof crypto !== "undefined" && crypto.randomUUID ? crypto.randomUUID() : (await import("crypto")).randomUUID();
 
     // 4. Initialize Payment Provider
     const provider = getPaymentProvider();
@@ -291,7 +317,7 @@ export async function POST(request: Request) {
         if (orderItemsCalculated.length > 0) {
           const lineItemsToInsert = orderItemsCalculated.map((item) => ({
             order_id: orderId,
-            menu_item_id: item.menu_item_id,
+            menu_item_id: isUUID(item.menu_item_id) ? item.menu_item_id : null,
             item_name_snapshot: item.item_name_snapshot,
             unit_price_snapshot: item.unit_price_snapshot,
             quantity: item.quantity,

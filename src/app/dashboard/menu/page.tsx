@@ -197,7 +197,7 @@ export default function MenuManagementPage() {
           let dbCategories: Category[] = [];
           if (catRes.ok) {
             const catData = await catRes.json();
-            if (catData.categories && catData.categories.length > 0) {
+            if (Array.isArray(catData.categories)) {
               dbCategories = catData.categories;
               setCategories(dbCategories);
               state.categories = dbCategories;
@@ -207,7 +207,7 @@ export default function MenuManagementPage() {
           let dbItems: MenuItem[] = [];
           if (itemsRes.ok) {
             const itemsData = await itemsRes.json();
-            if (itemsData.items) {
+            if (Array.isArray(itemsData.items)) {
               dbItems = itemsData.items;
               setMenuItems(dbItems);
               state.menuItems = dbItems;
@@ -300,36 +300,46 @@ export default function MenuManagementPage() {
     const targetRestId = restaurantId || getLocalState().restaurant.id;
     if (editingCategory) {
       try {
-        await fetch(`/api/menu/categories/${editingCategory.id}`, {
+        const res = await fetch(`/api/menu/categories/${editingCategory.id}`, {
           method: "PATCH",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ name: categoryName.trim() }),
         });
-      } catch {}
-      updateCategory(editingCategory.id, categoryName);
-      showToast(`Category "${categoryName}" updated`);
+        const data = await res.json();
+        if (!res.ok) {
+          setCategoryError(data.error || "Failed to update category");
+          return;
+        }
+        updateCategory(editingCategory.id, categoryName);
+        showToast(`Category "${categoryName}" updated`);
+        setShowCategoryModal(false);
+      } catch (err: any) {
+        setCategoryError(err.message || "Failed to update category");
+      }
     } else {
-      let createdCat: any = null;
       try {
         const res = await fetch("/api/menu/categories", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ restaurant_id: targetRestId, name: categoryName.trim() }),
         });
-        if (res.ok) {
-          const data = await res.json();
-          createdCat = data.category;
+        const data = await res.json();
+        if (!res.ok) {
+          setCategoryError(data.error || "Failed to create category");
+          return;
         }
-      } catch {}
 
-      if (createdCat) {
-        addCategory(createdCat.name, createdCat.id);
-      } else {
-        addCategory(categoryName);
+        if (data.category) {
+          addCategory(data.category.name, data.category.id);
+          showToast(`Category "${data.category.name}" created`);
+          setShowCategoryModal(false);
+        } else {
+          setCategoryError("Failed to create category: no category returned");
+        }
+      } catch (err: any) {
+        setCategoryError(err.message || "Failed to create category");
       }
-      showToast(`Category "${categoryName}" created`);
     }
-    setShowCategoryModal(false);
   };
 
   const handleMoveCategoryUp = (index: number) => {
@@ -404,14 +414,22 @@ export default function MenuManagementPage() {
         is_available: itemForm.is_available,
       };
       try {
-        await fetch(`/api/menu/items/${editingItem.id}`, {
+        const res = await fetch(`/api/menu/items/${editingItem.id}`, {
           method: "PATCH",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify(updates),
         });
-      } catch {}
-      updateMenuItem(editingItem.id, updates);
-      showToast(`"${itemForm.name}" updated`);
+        const data = await res.json();
+        if (!res.ok) {
+          setItemError(data.error || "Failed to update item");
+          return;
+        }
+        updateMenuItem(editingItem.id, updates);
+        showToast(`"${itemForm.name}" updated`);
+        setShowItemModal(false);
+      } catch (err: any) {
+        setItemError(err.message || "Failed to update item");
+      }
     } else {
       const itemPayload = {
         restaurant_id: targetRestId,
@@ -426,27 +444,29 @@ export default function MenuManagementPage() {
         sort_order: menuItems.length + 1,
       };
 
-      let dbItem: any = null;
       try {
         const res = await fetch("/api/menu/items", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify(itemPayload),
         });
-        if (res.ok) {
-          const data = await res.json();
-          dbItem = data.item;
+        const data = await res.json();
+        if (!res.ok) {
+          setItemError(data.error || "Failed to create menu item");
+          return;
         }
-      } catch {}
 
-      if (dbItem) {
-        addMenuItem(dbItem);
-      } else {
-        addMenuItem(itemPayload);
+        if (data.item) {
+          addMenuItem(data.item);
+          showToast(`"${data.item.name}" added to menu`);
+          setShowItemModal(false);
+        } else {
+          setItemError("Failed to create menu item: no item returned");
+        }
+      } catch (err: any) {
+        setItemError(err.message || "Failed to create menu item");
       }
-      showToast(`"${itemForm.name}" added to menu`);
     }
-    setShowItemModal(false);
   };
 
   const handleToggle = async (id: string) => {
@@ -469,15 +489,35 @@ export default function MenuManagementPage() {
     if (!deleteTarget) return;
     if (deleteTarget.type === "category") {
       try {
-        await fetch(`/api/menu/categories/${deleteTarget.id}`, { method: "DELETE" });
-      } catch {}
+        const res = await fetch(`/api/menu/categories/${deleteTarget.id}`, { method: "DELETE" });
+        if (!res.ok) {
+          const data = await res.json();
+          showToast(data.error || "Failed to delete category");
+          setDeleteTarget(null);
+          return;
+        }
+      } catch (err: any) {
+        showToast(err.message || "Network error deleting category");
+        setDeleteTarget(null);
+        return;
+      }
       deleteCategory(deleteTarget.id);
       if (selectedCategory === deleteTarget.id) setSelectedCategory("ALL");
       showToast(`Category "${deleteTarget.name}" deleted`);
     } else {
       try {
-        await fetch(`/api/menu/items/${deleteTarget.id}`, { method: "DELETE" });
-      } catch {}
+        const res = await fetch(`/api/menu/items/${deleteTarget.id}`, { method: "DELETE" });
+        if (!res.ok) {
+          const data = await res.json();
+          showToast(data.error || "Failed to delete item");
+          setDeleteTarget(null);
+          return;
+        }
+      } catch (err: any) {
+        showToast(err.message || "Network error deleting item");
+        setDeleteTarget(null);
+        return;
+      }
       deleteMenuItem(deleteTarget.id);
       showToast(`"${deleteTarget.name}" removed from menu`);
     }

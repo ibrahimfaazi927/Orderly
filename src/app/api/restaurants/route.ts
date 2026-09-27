@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { createClient } from "@/lib/supabase/server";
+import { createAdminClient } from "@/lib/supabase/admin";
 import {
   saveDemoRestaurant,
   saveDemoCategory,
@@ -35,8 +36,10 @@ export async function GET(request: Request) {
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     }
 
+    const admin = createAdminClient();
+
     // 1. Check existing restaurant membership
-    const { data: membership } = await supabase
+    const { data: membership } = await admin
       .from("restaurant_members")
       .select("restaurant_id, role")
       .eq("user_id", user.id)
@@ -44,7 +47,7 @@ export async function GET(request: Request) {
       .maybeSingle();
 
     if (membership?.restaurant_id) {
-      const { data: restaurant } = await supabase
+      const { data: restaurant } = await admin
         .from("restaurants")
         .select("*")
         .eq("id", membership.restaurant_id)
@@ -69,7 +72,7 @@ export async function GET(request: Request) {
       .replace(/^-|-$/g, "");
 
     // Check if restaurant with this slug already exists (try cleanNoHyphen first, then cleanWithHyphen)
-    let { data: existingRest } = await supabase
+    let { data: existingRest } = await admin
       .from("restaurants")
       .select("*")
       .or(`slug.ilike.${cleanNoHyphen},slug.ilike.${cleanWithHyphen}`)
@@ -77,8 +80,8 @@ export async function GET(request: Request) {
       .maybeSingle();
 
     if (existingRest) {
-      // Link user as owner
-      await supabase.from("restaurant_members").upsert(
+      // Link user as owner with admin client (bypasses RLS circular lock)
+      await admin.from("restaurant_members").upsert(
         {
           restaurant_id: existingRest.id,
           user_id: user.id,
@@ -92,7 +95,7 @@ export async function GET(request: Request) {
 
     // 3. Auto-provision restaurant row if not yet created (defaults to unhyphenated clean slug like katihouse)
     const baseSlug = cleanNoHyphen || `rest-${user.id.slice(0, 8)}`;
-    const { data: newRest, error: createError } = await supabase
+    const { data: newRest, error: createError } = await admin
       .from("restaurants")
       .insert({
         name: restaurantName,
@@ -104,19 +107,19 @@ export async function GET(request: Request) {
       .select()
       .single();
 
-    if (createError) {
-      return NextResponse.json({ error: createError.message }, { status: 400 });
+    if (createError || !newRest) {
+      return NextResponse.json({ error: createError?.message || "Failed to create restaurant" }, { status: 400 });
     }
 
     // Link user as OWNER
-    await supabase.from("restaurant_members").insert({
+    await admin.from("restaurant_members").insert({
       restaurant_id: newRest.id,
       user_id: user.id,
       role: "OWNER",
     });
 
     // Create default table
-    await supabase.from("restaurant_tables").insert({
+    await admin.from("restaurant_tables").insert({
       restaurant_id: newRest.id,
       table_number: "01",
       token: `tbl_${Math.random().toString(36).substring(2, 9).toUpperCase()}`,
@@ -124,7 +127,7 @@ export async function GET(request: Request) {
     });
 
     // Create default category
-    await supabase.from("categories").insert({
+    await admin.from("categories").insert({
       restaurant_id: newRest.id,
       name: "Main Menu",
       sort_order: 1,
@@ -233,8 +236,10 @@ export async function POST(request: Request) {
       .replace(/[^a-z0-9-]/g, "")
       .replace(/^-|-$/g, "");
 
+    const admin = createAdminClient();
+
     // 1. Check if restaurant with this slug already exists
-    let { data: existingRest } = await supabase
+    let { data: existingRest } = await admin
       .from("restaurants")
       .select("*")
       .ilike("slug", cleanSlug)
@@ -242,7 +247,7 @@ export async function POST(request: Request) {
 
     if (existingRest) {
       // Update restaurant details & ensure membership
-      const { data: updatedRest } = await supabase
+      const { data: updatedRest } = await admin
         .from("restaurants")
         .update({
           name,
@@ -257,7 +262,7 @@ export async function POST(request: Request) {
         .select()
         .single();
 
-      await supabase.from("restaurant_members").upsert(
+      const { error: memberErr } = await admin.from("restaurant_members").upsert(
         {
           restaurant_id: existingRest.id,
           user_id: user.id,
@@ -266,8 +271,16 @@ export async function POST(request: Request) {
         { onConflict: "restaurant_id,user_id" }
       );
 
+      if (memberErr) {
+        console.error("[Restaurants API] Upsert member error:", memberErr);
+        return NextResponse.json(
+          { error: "Failed to establish restaurant ownership: " + memberErr.message },
+          { status: 500 }
+        );
+      }
+
       // Ensure at least one table exists
-      let { data: table } = await supabase
+      let { data: table } = await admin
         .from("restaurant_tables")
         .select("*")
         .eq("restaurant_id", existingRest.id)
@@ -275,7 +288,7 @@ export async function POST(request: Request) {
         .maybeSingle();
 
       if (!table) {
-        const { data: newTbl } = await supabase
+        const { data: newTbl } = await admin
           .from("restaurant_tables")
           .insert({
             restaurant_id: existingRest.id,
@@ -289,7 +302,7 @@ export async function POST(request: Request) {
       }
 
       // Ensure at least one category exists
-      let { data: category } = await supabase
+      let { data: category } = await admin
         .from("categories")
         .select("*")
         .eq("restaurant_id", existingRest.id)
@@ -297,7 +310,7 @@ export async function POST(request: Request) {
         .maybeSingle();
 
       if (!category) {
-        const { data: newCat } = await supabase
+        const { data: newCat } = await admin
           .from("categories")
           .insert({
             restaurant_id: existingRest.id,
@@ -319,7 +332,7 @@ export async function POST(request: Request) {
     }
 
     // 2. Insert restaurant if it doesn't exist yet
-    const { data: restaurant, error: restError } = await supabase
+    const { data: restaurant, error: restError } = await admin
       .from("restaurants")
       .insert({
         name,
@@ -333,19 +346,27 @@ export async function POST(request: Request) {
       .select()
       .single();
 
-    if (restError) {
-      return NextResponse.json({ error: restError.message }, { status: 400 });
+    if (restError || !restaurant) {
+      return NextResponse.json({ error: restError?.message || "Failed to create restaurant" }, { status: 400 });
     }
 
-    // Link user as OWNER
-    await supabase.from("restaurant_members").insert({
+    // Link user as OWNER using adminClient (bypassing RLS circular lock)
+    const { error: memberError } = await admin.from("restaurant_members").insert({
       restaurant_id: restaurant.id,
       user_id: user.id,
       role: "OWNER",
     });
 
+    if (memberError) {
+      console.error("[Restaurants API] Insert member error:", memberError);
+      return NextResponse.json(
+        { error: "Failed to link owner to restaurant: " + memberError.message },
+        { status: 500 }
+      );
+    }
+
     // Create initial table
-    const { data: createdTable } = await supabase
+    const { data: createdTable } = await admin
       .from("restaurant_tables")
       .insert({
         restaurant_id: restaurant.id,
@@ -357,7 +378,7 @@ export async function POST(request: Request) {
       .single();
 
     // Create initial category
-    const { data: createdCategory } = await supabase
+    const { data: createdCategory } = await admin
       .from("categories")
       .insert({
         restaurant_id: restaurant.id,

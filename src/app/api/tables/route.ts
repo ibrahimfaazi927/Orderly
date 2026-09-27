@@ -1,6 +1,11 @@
 import { NextResponse } from "next/server";
 import { createClient } from "@/lib/supabase/server";
+import { createAdminClient } from "@/lib/supabase/admin";
 import { getDemoTables, saveDemoTable } from "@/lib/server-demo-store";
+
+const isUUID = (str: any) =>
+  typeof str === "string" &&
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(str);
 
 export async function GET(request: Request) {
   try {
@@ -20,11 +25,22 @@ export async function GET(request: Request) {
       return NextResponse.json({ tables: demoTables }, { status: 200 });
     }
 
-    const supabase = await createClient();
-    const { data: tables, error } = await supabase
+    const admin = createAdminClient();
+
+    let targetRestId = restaurantId;
+    if (!isUUID(restaurantId)) {
+      const { data: rest } = await admin
+        .from("restaurants")
+        .select("id")
+        .ilike("slug", restaurantId)
+        .maybeSingle();
+      if (rest?.id) targetRestId = rest.id;
+    }
+
+    const { data: tables, error } = await admin
       .from("restaurant_tables")
       .select("*")
-      .eq("restaurant_id", restaurantId)
+      .eq("restaurant_id", targetRestId)
       .order("table_number", { ascending: true });
 
     if (error) {
@@ -83,18 +99,60 @@ export async function POST(request: Request) {
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     }
 
+    const admin = createAdminClient();
+
+    // Resolve restaurant UUID
+    let resolvedRestId: string | null = null;
+    if (isUUID(restaurant_id)) {
+      const { data: rest } = await admin
+        .from("restaurants")
+        .select("id")
+        .eq("id", restaurant_id)
+        .maybeSingle();
+      if (rest?.id) resolvedRestId = rest.id;
+    }
+
+    if (!resolvedRestId) {
+      const cleanSlug = String(restaurant_id).toLowerCase().replace(/[^a-z0-9-]/g, "");
+      const { data: restBySlug } = await admin
+        .from("restaurants")
+        .select("id")
+        .ilike("slug", cleanSlug)
+        .maybeSingle();
+      if (restBySlug?.id) resolvedRestId = restBySlug.id;
+    }
+
+    if (!resolvedRestId) {
+      const { data: userMembership } = await admin
+        .from("restaurant_members")
+        .select("restaurant_id")
+        .eq("user_id", user.id)
+        .limit(1)
+        .maybeSingle();
+      if (userMembership?.restaurant_id) {
+        resolvedRestId = userMembership.restaurant_id;
+      }
+    }
+
+    if (!resolvedRestId) {
+      return NextResponse.json(
+        { error: `Restaurant "${restaurant_id}" could not be resolved. Please complete onboarding first.` },
+        { status: 400 }
+      );
+    }
+
     // Auto-link owner if membership is missing
-    let { data: membership } = await supabase
+    let { data: membership } = await admin
       .from("restaurant_members")
       .select("role")
-      .eq("restaurant_id", restaurant_id)
+      .eq("restaurant_id", resolvedRestId)
       .eq("user_id", user.id)
       .maybeSingle();
 
     if (!membership) {
-      await supabase.from("restaurant_members").upsert(
+      await admin.from("restaurant_members").upsert(
         {
-          restaurant_id,
+          restaurant_id: resolvedRestId,
           user_id: user.id,
           role: "OWNER",
         },
@@ -105,10 +163,10 @@ export async function POST(request: Request) {
     const token =
       body.token || `tbl_${Math.random().toString(36).substring(2, 9).toUpperCase()}`;
 
-    const { data: table, error } = await supabase
+    const { data: table, error } = await admin
       .from("restaurant_tables")
       .insert({
-        restaurant_id,
+        restaurant_id: resolvedRestId,
         table_number: table_number.trim(),
         token,
         is_active: body.is_active !== undefined ? body.is_active : true,
@@ -116,8 +174,9 @@ export async function POST(request: Request) {
       .select()
       .single();
 
-    if (error) {
-      return NextResponse.json({ error: error.message }, { status: 400 });
+    if (error || !table) {
+      console.error("[Tables API] Insert table error:", error);
+      return NextResponse.json({ error: error?.message || "Failed to create table in database" }, { status: 400 });
     }
 
     return NextResponse.json({ table }, { status: 201 });

@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { createClient } from "@/lib/supabase/server";
+import { createAdminClient } from "@/lib/supabase/admin";
 
 export async function PATCH(
   request: Request,
@@ -26,13 +27,15 @@ export async function PATCH(
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     }
 
+    const admin = createAdminClient();
+
     const updates: Record<string, any> = {};
     if (body.table_number !== undefined) updates.table_number = body.table_number.trim();
     if (body.token !== undefined) updates.token = body.token.trim();
     if (body.is_active !== undefined) updates.is_active = body.is_active;
     updates.updated_at = new Date().toISOString();
 
-    const { data: table, error } = await supabase
+    const { data: table, error } = await admin
       .from("restaurant_tables")
       .update(updates)
       .eq("id", id)
@@ -76,7 +79,9 @@ export async function DELETE(
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     }
 
-    const { error } = await supabase.from("restaurant_tables").delete().eq("id", id);
+    const admin = createAdminClient();
+
+    const { error } = await admin.from("restaurant_tables").delete().eq("id", id);
 
     if (error) {
       return NextResponse.json({ error: error.message }, { status: 400 });

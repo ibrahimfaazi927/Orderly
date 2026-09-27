@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { createClient } from "@/lib/supabase/server";
+import { createAdminClient } from "@/lib/supabase/admin";
 
 // PATCH: Update a menu item
 export async function PATCH(
@@ -8,47 +9,57 @@ export async function PATCH(
 ) {
   const { id } = await params;
   const body = await request.json();
+
+  const isPlaceholder =
+    !process.env.NEXT_PUBLIC_SUPABASE_URL ||
+    process.env.NEXT_PUBLIC_SUPABASE_URL.includes("placeholder");
+
+  if (isPlaceholder) {
+    return NextResponse.json({ item: { id, ...body } });
+  }
+
   const supabase = await createClient();
+  const {
+    data: { user },
+  } = await supabase.auth.getUser();
 
-  const isPlaceholder = !process.env.NEXT_PUBLIC_SUPABASE_URL || process.env.NEXT_PUBLIC_SUPABASE_URL.includes("placeholder");
-  if (!isPlaceholder) {
-    const { data: { user } } = await supabase.auth.getUser();
-    if (!user) {
-      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-    }
+  if (!user) {
+    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  }
 
-    const { data: item } = await supabase
-      .from("menu_items")
-      .select("restaurant_id")
-      .eq("id", id)
-      .single();
+  const admin = createAdminClient();
 
-    if (!item) {
-      return NextResponse.json({ error: "Menu item not found" }, { status: 404 });
-    }
+  const { data: item } = await admin
+    .from("menu_items")
+    .select("restaurant_id")
+    .eq("id", id)
+    .single();
 
-    let { data: membership } = await supabase
-      .from("restaurant_members")
-      .select("role")
-      .eq("restaurant_id", item.restaurant_id)
-      .eq("user_id", user.id)
-      .maybeSingle();
+  if (!item) {
+    return NextResponse.json({ error: "Menu item not found" }, { status: 404 });
+  }
 
-    if (!membership) {
-      await supabase.from("restaurant_members").upsert(
-        {
-          restaurant_id: item.restaurant_id,
-          user_id: user.id,
-          role: "OWNER",
-        },
-        { onConflict: "restaurant_id,user_id" }
-      );
-      membership = { role: "OWNER" };
-    }
+  let { data: membership } = await admin
+    .from("restaurant_members")
+    .select("role")
+    .eq("restaurant_id", item.restaurant_id)
+    .eq("user_id", user.id)
+    .maybeSingle();
 
-    if (!membership || !["OWNER", "MANAGER"].includes(membership.role)) {
-      return NextResponse.json({ error: "Forbidden" }, { status: 403 });
-    }
+  if (!membership) {
+    await admin.from("restaurant_members").upsert(
+      {
+        restaurant_id: item.restaurant_id,
+        user_id: user.id,
+        role: "OWNER",
+      },
+      { onConflict: "restaurant_id,user_id" }
+    );
+    membership = { role: "OWNER" };
+  }
+
+  if (!membership || !["OWNER", "MANAGER"].includes(membership.role)) {
+    return NextResponse.json({ error: "Forbidden" }, { status: 403 });
   }
 
   const updates: Record<string, any> = {};
@@ -63,7 +74,7 @@ export async function PATCH(
   if (body.sort_order !== undefined) updates.sort_order = body.sort_order;
   updates.updated_at = new Date().toISOString();
 
-  const { data, error } = await supabase
+  const { data, error } = await admin
     .from("menu_items")
     .update(updates)
     .eq("id", id)
@@ -83,50 +94,60 @@ export async function DELETE(
   { params }: { params: Promise<{ id: string }> }
 ) {
   const { id } = await params;
-  const supabase = await createClient();
 
-  const isPlaceholder = !process.env.NEXT_PUBLIC_SUPABASE_URL || process.env.NEXT_PUBLIC_SUPABASE_URL.includes("placeholder");
-  if (!isPlaceholder) {
-    const { data: { user } } = await supabase.auth.getUser();
-    if (!user) {
-      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-    }
+  const isPlaceholder =
+    !process.env.NEXT_PUBLIC_SUPABASE_URL ||
+    process.env.NEXT_PUBLIC_SUPABASE_URL.includes("placeholder");
 
-    const { data: item } = await supabase
-      .from("menu_items")
-      .select("restaurant_id")
-      .eq("id", id)
-      .single();
-
-    if (!item) {
-      return NextResponse.json({ error: "Menu item not found" }, { status: 404 });
-    }
-
-    let { data: membership } = await supabase
-      .from("restaurant_members")
-      .select("role")
-      .eq("restaurant_id", item.restaurant_id)
-      .eq("user_id", user.id)
-      .maybeSingle();
-
-    if (!membership) {
-      await supabase.from("restaurant_members").upsert(
-        {
-          restaurant_id: item.restaurant_id,
-          user_id: user.id,
-          role: "OWNER",
-        },
-        { onConflict: "restaurant_id,user_id" }
-      );
-      membership = { role: "OWNER" };
-    }
-
-    if (!membership || !["OWNER", "MANAGER"].includes(membership.role)) {
-      return NextResponse.json({ error: "Forbidden" }, { status: 403 });
-    }
+  if (isPlaceholder) {
+    return NextResponse.json({ success: true });
   }
 
-  const { error } = await supabase.from("menu_items").delete().eq("id", id);
+  const supabase = await createClient();
+  const {
+    data: { user },
+  } = await supabase.auth.getUser();
+
+  if (!user) {
+    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  }
+
+  const admin = createAdminClient();
+
+  const { data: item } = await admin
+    .from("menu_items")
+    .select("restaurant_id")
+    .eq("id", id)
+    .single();
+
+  if (!item) {
+    return NextResponse.json({ error: "Menu item not found" }, { status: 404 });
+  }
+
+  let { data: membership } = await admin
+    .from("restaurant_members")
+    .select("role")
+    .eq("restaurant_id", item.restaurant_id)
+    .eq("user_id", user.id)
+    .maybeSingle();
+
+  if (!membership) {
+    await admin.from("restaurant_members").upsert(
+      {
+        restaurant_id: item.restaurant_id,
+        user_id: user.id,
+        role: "OWNER",
+      },
+      { onConflict: "restaurant_id,user_id" }
+    );
+    membership = { role: "OWNER" };
+  }
+
+  if (!membership || !["OWNER", "MANAGER"].includes(membership.role)) {
+    return NextResponse.json({ error: "Forbidden" }, { status: 403 });
+  }
+
+  const { error } = await admin.from("menu_items").delete().eq("id", id);
 
   if (error) {
     return NextResponse.json({ error: error.message || "Failed to delete item" }, { status: 400 });
