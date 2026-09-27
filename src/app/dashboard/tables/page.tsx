@@ -3,6 +3,7 @@
 import { useState, useEffect, useCallback, useId } from "react";
 import Link from "next/link";
 import QRCode from "qrcode";
+import { getCanonicalOrigin } from "@/lib/url";
 import {
   getLocalState,
   saveLocalState,
@@ -37,7 +38,7 @@ export default function TablesManagementPage() {
   const [tables, setTables] = useState<RestaurantTable[]>([]);
   const [restaurant, setRestaurant] = useState<Restaurant | null>(null);
   const [qrMap, setQrMap] = useState<Record<string, string>>({});
-  const [origin, setOrigin] = useState("");
+
 
   // Modals
   const [showAddModal, setShowAddModal] = useState(false);
@@ -94,7 +95,6 @@ export default function TablesManagementPage() {
 
   useEffect(() => {
     sync();
-    setOrigin(window.location.origin);
     window.addEventListener("orderly_storage_change", sync);
     return () => window.removeEventListener("orderly_storage_change", sync);
   }, [sync]);
@@ -103,7 +103,7 @@ export default function TablesManagementPage() {
   useEffect(() => {
     if (!tables.length) return;
     const slug = restaurant?.slug || "";
-    const base = origin || "http://localhost:3000";
+    const base = getCanonicalOrigin();
 
     const generateAll = async () => {
       const entries: Record<string, string> = {};
@@ -127,7 +127,7 @@ export default function TablesManagementPage() {
     };
 
     generateAll();
-  }, [tables, restaurant, origin]);
+  }, [tables, restaurant]);
 
   const handleCreate = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -219,7 +219,7 @@ export default function TablesManagementPage() {
 
   const copyUrl = (table: RestaurantTable) => {
     const slug = restaurant?.slug || "";
-    const base = origin || "http://localhost:3000";
+    const base = getCanonicalOrigin();
     const url = `${base}/r/${slug}/${table.token}`;
     navigator.clipboard.writeText(url);
     setCopiedId(table.id);
