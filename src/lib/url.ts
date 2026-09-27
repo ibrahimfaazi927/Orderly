@@ -8,7 +8,7 @@
  * In local development it falls back to http://localhost:3000.
  */
 
-const PRODUCTION_URL = "https://orderly.vercel.app";
+const PRODUCTION_URL = "https://orderlly.vercel.app";
 
 export function getCanonicalOrigin(): string {
   if (typeof window === "undefined") {
