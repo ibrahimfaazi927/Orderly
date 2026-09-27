@@ -24,7 +24,7 @@ export default function LoginPage() {
     setError(null);
     setInfoMessage(null);
 
-    const cleanId = identifier.trim();
+    const cleanId = identifier.trim().toLowerCase();
     const cleanPass = password.trim();
 
     if (!cleanId) {
@@ -34,6 +34,14 @@ export default function LoginPage() {
           : "Please enter your Business Work Email or Account ID."
       );
       return;
+    }
+
+    if (isConfigured) {
+      const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/;
+      if (!emailRegex.test(cleanId)) {
+        setError("Please enter a valid business email address (e.g. owner@restaurant.com).");
+        return;
+      }
     }
 
     if (!cleanPass) {

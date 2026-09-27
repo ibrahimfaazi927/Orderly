@@ -43,27 +43,60 @@ export default function SignupPage() {
 
   const handleSignup = async (e: React.FormEvent) => {
     e.preventDefault();
-    setLoading(true);
     setError(null);
+
+    const cleanEmail = email.trim().toLowerCase();
+    const cleanPassword = password.trim();
+    const cleanRestaurantName = restaurantName.trim();
+    const cleanFullName = fullName.trim();
+
+    if (!cleanRestaurantName) {
+      setError("Please enter your business or restaurant brand name.");
+      return;
+    }
+
+    if (!cleanFullName) {
+      setError("Please enter the owner or manager's full name.");
+      return;
+    }
+
+    if (!cleanEmail) {
+      setError("Please enter your work email address.");
+      return;
+    }
+
+    const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/;
+    if (!emailRegex.test(cleanEmail)) {
+      setError("Please enter a valid business email address (e.g. owner@restaurant.com).");
+      return;
+    }
+
+    if (cleanPassword.length < 6) {
+      setError("Password must be at least 6 characters long.");
+      return;
+    }
+
+    setLoading(true);
 
     try {
       const res = await registerBusiness({
-        businessName: restaurantName,
+        businessName: cleanRestaurantName,
         businessType,
-        fullName,
-        email,
-        password,
+        fullName: cleanFullName,
+        email: cleanEmail,
+        password: cleanPassword,
       });
 
       if (!res.success) {
-        setError(res.error || "Failed to create business account");
+        setError(res.error || "Failed to create business account.");
         setLoading(false);
         return;
       }
 
-      router.push(`/dashboard/onboarding?name=${encodeURIComponent(restaurantName)}&type=${encodeURIComponent(businessType)}`);
-    } catch (err: any) {
-      setError(err?.message || "An unexpected error occurred during registration");
+      router.push(`/dashboard/onboarding?name=${encodeURIComponent(cleanRestaurantName)}&type=${encodeURIComponent(businessType)}`);
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : "An unexpected error occurred during registration.";
+      setError(message);
       setLoading(false);
     }
   };

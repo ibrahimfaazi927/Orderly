@@ -86,7 +86,8 @@ export function clearSessionCookie() {
 }
 
 /**
- * Register a new business with local fallback when Supabase is unconfigured
+ * Register a new business with Supabase Auth as the authoritative source
+ * Falls back to local registration ONLY when Supabase is not configured.
  */
 export async function registerBusiness(data: {
   businessName: string;
@@ -97,55 +98,145 @@ export async function registerBusiness(data: {
 }): Promise<{ success: boolean; error?: string; restaurantSlug?: string }> {
   const { businessName, businessType, fullName, email, password } = data;
 
+  const cleanEmail = (email || "").trim().toLowerCase();
+  const cleanPassword = (password || "").trim();
+  const cleanBusinessName = (businessName || "").trim();
+  const cleanFullName = (fullName || "").trim();
+
+  if (!cleanEmail) {
+    return { success: false, error: "Business email is required to register." };
+  }
+
+  if (!cleanBusinessName) {
+    return { success: false, error: "Business name is required to register." };
+  }
+
   const slug =
-    businessName
+    cleanBusinessName
       .toLowerCase()
-      .trim()
       .replace(/[^a-z0-9]+/g, "-")
       .replace(/^-|-$/g, "") || `biz-${Date.now()}`;
 
   const restaurantId = `rest-${Date.now()}`;
 
-  // 1. Try Supabase registration if configured
-  if (isSupabaseConfigured() && password) {
+  // 1. Authoritative Supabase registration when configured
+  if (isSupabaseConfigured()) {
+    if (!cleanPassword) {
+      return { success: false, error: "Password is required to register." };
+    }
+
     try {
       const supabase = createClient();
-      const { error: authError } = await supabase.auth.signUp({
-        email,
-        password,
+      const { data: authData, error: authError } = await supabase.auth.signUp({
+        email: cleanEmail,
+        password: cleanPassword,
         options: {
           data: {
-            full_name: fullName,
-            restaurant_name: businessName,
+            full_name: cleanFullName,
+            restaurant_name: cleanBusinessName,
             business_type: businessType,
           },
         },
       });
 
-      if (!authError) {
-        setSessionCookie();
+      if (authError) {
+        console.warn(
+          "[Orderly Auth] Supabase signUp failed:",
+          authError.message,
+          "| status:",
+          authError.status
+        );
+        return {
+          success: false,
+          error: authError.message || "Failed to create business account.",
+        };
       }
-    } catch {
-      // Fallback seamlessly to local registration
+
+      if (!authData?.user) {
+        return {
+          success: false,
+          error: "Failed to create business user. Please try again.",
+        };
+      }
+
+      setSessionCookie();
+
+      // Store authenticated user session info locally
+      const account: BusinessAccount = {
+        id: authData.user.id,
+        email: authData.user.email ? authData.user.email.toLowerCase() : cleanEmail,
+        fullName: cleanFullName,
+        businessName: cleanBusinessName,
+        businessType,
+        restaurantId: `rest-${authData.user.id}`,
+        createdAt: authData.user.created_at || new Date().toISOString(),
+      };
+
+      if (typeof window !== "undefined") {
+        localStorage.setItem(CURRENT_USER_KEY, JSON.stringify(account));
+      }
+
+      // Initialize fresh restaurant state for the authenticated business
+      const freshState = {
+        restaurant: {
+          id: `rest-${authData.user.id}`,
+          name: cleanBusinessName,
+          slug,
+          business_type: businessType,
+          currency: "INR",
+          tax_rate: 5.0,
+          phone: "",
+          address: "",
+          is_active: true,
+          created_at: new Date().toISOString(),
+          updated_at: new Date().toISOString(),
+        },
+        categories: [],
+        menuItems: [],
+        tables: [
+          {
+            id: `tbl-${Date.now()}`,
+            restaurant_id: `rest-${authData.user.id}`,
+            table_number: "01",
+            token: `tbl_${Math.random().toString(36).substring(2, 9).toUpperCase()}`,
+            capacity: 4,
+            is_active: true,
+            created_at: new Date().toISOString(),
+          },
+        ],
+        orders: [],
+        payments: [],
+      };
+
+      saveLocalState(freshState as any);
+
+      return { success: true, restaurantSlug: slug };
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : String(err);
+      console.error("[Orderly Auth] Unexpected error during Supabase registration:", message);
+      return {
+        success: false,
+        error: message || "An unexpected error occurred during registration.",
+      };
     }
   }
 
-  // 2. Local business registration (guarantees zero-block onboarding)
+  // 2. Local business registration (ONLY when Supabase is genuinely NOT configured)
   try {
     const account: BusinessAccount = {
       id: `acc-${Date.now()}`,
-      email,
-      fullName,
-      businessName,
+      email: cleanEmail,
+      fullName: cleanFullName,
+      businessName: cleanBusinessName,
       businessType,
       restaurantId,
       createdAt: new Date().toISOString(),
-      password: password || undefined,
+      password: cleanPassword || undefined,
     };
 
     if (typeof window !== "undefined") {
       const accounts = getStoredAccounts();
-      const filtered = accounts.filter((a) => a.email.toLowerCase() !== email.toLowerCase());
+      const filtered = accounts.filter((a) => a.email.toLowerCase() !== cleanEmail);
       filtered.push(account);
       localStorage.setItem(ACCOUNTS_STORAGE_KEY, JSON.stringify(filtered));
       localStorage.setItem(CURRENT_USER_KEY, JSON.stringify(account));
@@ -157,7 +248,7 @@ export async function registerBusiness(data: {
     const freshState = {
       restaurant: {
         id: restaurantId,
-        name: businessName,
+        name: cleanBusinessName,
         slug,
         business_type: businessType,
         currency: "INR",
@@ -204,7 +295,7 @@ export async function loginBusiness(
   identifier: string,
   password?: string
 ): Promise<{ success: boolean; error?: string; account?: BusinessAccount }> {
-  const cleanId = (identifier || "").trim();
+  const cleanId = (identifier || "").trim().toLowerCase();
   const cleanPass = (password || "").trim();
 
   // 1. Mandatory input validations
@@ -248,8 +339,8 @@ export async function loginBusiness(
         const accounts = getStoredAccounts();
         let existing = accounts.find(
           (a) =>
-            a.email.toLowerCase() === cleanId.toLowerCase() ||
-            a.id.toLowerCase() === cleanId.toLowerCase()
+            a.email.toLowerCase() === cleanId ||
+            a.id.toLowerCase() === cleanId
         );
         if (!existing) {
           existing = {
