@@ -130,10 +130,11 @@ export function updateRestaurantProfile(updates: Partial<Restaurant>): Restauran
 // -------------------------------------------------------------
 // CATEGORY MANAGEMENT
 // -------------------------------------------------------------
-export function addCategory(name: string): Category {
+export function addCategory(name: string, customId?: string): Category {
   const state = getLocalState();
+  const id = customId || (typeof crypto !== "undefined" && crypto.randomUUID ? crypto.randomUUID() : `cat-${Date.now()}`);
   const newCat: Category = {
-    id: `cat-${Date.now()}`,
+    id,
     restaurant_id: state.restaurant.id,
     name: name.trim(),
     sort_order: state.categories.length + 1,
@@ -141,7 +142,12 @@ export function addCategory(name: string): Category {
     created_at: new Date().toISOString(),
     updated_at: new Date().toISOString(),
   };
-  state.categories.push(newCat);
+  const existingIdx = state.categories.findIndex((c) => c.id === id);
+  if (existingIdx >= 0) {
+    state.categories[existingIdx] = newCat;
+  } else {
+    state.categories.push(newCat);
+  }
   saveLocalState(state);
   return newCat;
 }
@@ -188,22 +194,34 @@ export function reorderCategories(categoryIds: string[]): Category[] {
 // MENU ITEM MANAGEMENT
 // -------------------------------------------------------------
 export function addMenuItem(
-  item: Omit<MenuItem, "id" | "restaurant_id" | "created_at" | "updated_at">
+  item: Omit<MenuItem, "id" | "restaurant_id" | "created_at" | "updated_at"> & {
+    id?: string;
+    restaurant_id?: string;
+    created_at?: string;
+    updated_at?: string;
+  }
 ): MenuItem {
   const state = getLocalState();
+  const id = item.id || (typeof crypto !== "undefined" && crypto.randomUUID ? crypto.randomUUID() : `item-${Date.now()}`);
   const newItem: MenuItem = {
     ...item,
-    id: `item-${Date.now()}`,
-    restaurant_id: state.restaurant.id,
+    id,
+    restaurant_id: item.restaurant_id || state.restaurant.id,
     price: Number(item.price),
     tax_rate: item.tax_rate !== undefined ? Number(item.tax_rate) : state.restaurant.tax_rate,
     is_available: item.is_available !== undefined ? item.is_available : true,
     dietary_type: item.dietary_type || "VEG",
-    sort_order: state.menuItems.length + 1,
-    created_at: new Date().toISOString(),
-    updated_at: new Date().toISOString(),
+    sort_order: item.sort_order !== undefined ? item.sort_order : state.menuItems.length + 1,
+    created_at: item.created_at || new Date().toISOString(),
+    updated_at: item.updated_at || new Date().toISOString(),
   };
-  state.menuItems.push(newItem);
+
+  const existingIdx = state.menuItems.findIndex((m) => m.id === id);
+  if (existingIdx >= 0) {
+    state.menuItems[existingIdx] = newItem;
+  } else {
+    state.menuItems.push(newItem);
+  }
   saveLocalState(state);
   return newItem;
 }
@@ -364,6 +382,8 @@ export function createOrderFromCustomer(data: {
   customerPhone?: string;
   notes?: string;
   items: { item: MenuItem; quantity: number }[];
+  id?: string;
+  orderNumber?: string;
 }): Order & { table_number?: string; items?: any[] } {
   const state = getLocalState();
   const taxRate = state.restaurant.tax_rate !== undefined ? Number(state.restaurant.tax_rate) : 5.0;
@@ -373,8 +393,8 @@ export function createOrderFromCustomer(data: {
   );
   const tax = Number(((subtotal * taxRate) / 100).toFixed(2));
   const total = Number((subtotal + tax).toFixed(2));
-  const orderNum = `ORD-${Math.floor(1000 + Math.random() * 9000)}`;
-  const orderId = `ord-${Date.now()}`;
+  const orderNum = data.orderNumber || `ORD-${Math.floor(1000 + Math.random() * 9000)}`;
+  const orderId = data.id || (typeof crypto !== "undefined" && crypto.randomUUID ? crypto.randomUUID() : `ord-${Date.now()}`);
 
   const newOrder: Order & { table_number?: string; items?: any[] } = {
     id: orderId,

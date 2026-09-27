@@ -3,6 +3,7 @@
 import { useState, useEffect, useCallback } from "react";
 import {
   getLocalState,
+  saveLocalState,
   addCategory,
   updateCategory,
   deleteCategory,
@@ -158,12 +159,116 @@ export default function MenuManagementPage() {
     setTimeout(() => setToast(null), 2500);
   }, []);
 
-  const sync = useCallback(() => {
+  const [restaurantId, setRestaurantId] = useState<string>("");
+
+  const sync = useCallback(async () => {
     const state = getLocalState();
     setCategories(state.categories || []);
     setMenuItems(state.menuItems || []);
     setCurrency(state.restaurant.currency || "INR");
     setTaxRate(state.restaurant.tax_rate || 5);
+    let currentRestId = state.restaurant?.id || "";
+    setRestaurantId(currentRestId);
+
+    // If Supabase is configured, fetch authoritative data and sync
+    try {
+      const restRes = await fetch("/api/restaurants");
+      if (restRes.ok) {
+        const restData = await restRes.json();
+        if (restData.success && restData.restaurant) {
+          const authorRest = restData.restaurant;
+          currentRestId = authorRest.id;
+          setRestaurantId(authorRest.id);
+          setCurrency(authorRest.currency || "INR");
+          setTaxRate(authorRest.tax_rate || 5);
+
+          // Update local state restaurant if needed
+          if (state.restaurant.id !== authorRest.id) {
+            state.restaurant = authorRest;
+            saveLocalState(state);
+          }
+
+          // Fetch categories and items from DB
+          const [catRes, itemsRes] = await Promise.all([
+            fetch(`/api/menu/categories?restaurant_id=${authorRest.id}`),
+            fetch(`/api/menu/items?restaurant_id=${authorRest.id}`),
+          ]);
+
+          let dbCategories: Category[] = [];
+          if (catRes.ok) {
+            const catData = await catRes.json();
+            if (catData.categories && catData.categories.length > 0) {
+              dbCategories = catData.categories;
+              setCategories(dbCategories);
+              state.categories = dbCategories;
+            }
+          }
+
+          let dbItems: MenuItem[] = [];
+          if (itemsRes.ok) {
+            const itemsData = await itemsRes.json();
+            if (itemsData.items) {
+              dbItems = itemsData.items;
+              setMenuItems(dbItems);
+              state.menuItems = dbItems;
+            }
+          }
+
+          // Auto-migration: Check if local store has legacy un-synced items (e.g. item-179050911898)
+          // that are not in the database, and push them to Supabase
+          const legacyItems = (state.menuItems || []).filter(
+            (localItem) =>
+              localItem.id.startsWith("item-") &&
+              !dbItems.some((dbI) => dbI.name.toLowerCase() === localItem.name.toLowerCase())
+          );
+
+          if (legacyItems.length > 0 && dbCategories.length > 0) {
+            for (const legacy of legacyItems) {
+              try {
+                const catId = dbCategories[0]?.id;
+                const migrateRes = await fetch("/api/menu/items", {
+                  method: "POST",
+                  headers: { "Content-Type": "application/json" },
+                  body: JSON.stringify({
+                    restaurant_id: authorRest.id,
+                    category_id: catId,
+                    name: legacy.name,
+                    description: legacy.description,
+                    image_url: legacy.image_url,
+                    price: legacy.price,
+                    tax_rate: legacy.tax_rate,
+                    is_available: legacy.is_available,
+                    dietary_type: legacy.dietary_type,
+                  }),
+                });
+                if (migrateRes.ok) {
+                  const migData = await migrateRes.json();
+                  if (migData.item) {
+                    addMenuItem(migData.item);
+                  }
+                }
+              } catch (migErr) {
+                console.warn("Item migration error:", migErr);
+              }
+            }
+            // Refetch items after migration
+            const refreshed = await fetch(`/api/menu/items?restaurant_id=${authorRest.id}`);
+            if (refreshed.ok) {
+              const rData = await refreshed.json();
+              if (rData.items) {
+                setMenuItems(rData.items);
+                state.menuItems = rData.items;
+                saveLocalState(state);
+              }
+            }
+          } else {
+            saveLocalState(state);
+          }
+        }
+      }
+    } catch (err) {
+      console.warn("[Menu Page] Supabase sync fallback:", err);
+    }
   }, []);
 
   useEffect(() => {
@@ -187,16 +292,41 @@ export default function MenuManagementPage() {
     setShowCategoryModal(true);
   };
 
-  const handleSaveCategory = () => {
+  const handleSaveCategory = async () => {
     if (!categoryName.trim()) {
       setCategoryError("Category name is required.");
       return;
     }
+    const targetRestId = restaurantId || getLocalState().restaurant.id;
     if (editingCategory) {
+      try {
+        await fetch(`/api/menu/categories/${editingCategory.id}`, {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ name: categoryName.trim() }),
+        });
+      } catch {}
       updateCategory(editingCategory.id, categoryName);
       showToast(`Category "${categoryName}" updated`);
     } else {
-      addCategory(categoryName);
+      let createdCat: any = null;
+      try {
+        const res = await fetch("/api/menu/categories", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ restaurant_id: targetRestId, name: categoryName.trim() }),
+        });
+        if (res.ok) {
+          const data = await res.json();
+          createdCat = data.category;
+        }
+      } catch {}
+
+      if (createdCat) {
+        addCategory(createdCat.name, createdCat.id);
+      } else {
+        addCategory(categoryName);
+      }
       showToast(`Category "${categoryName}" created`);
     }
     setShowCategoryModal(false);
@@ -246,7 +376,7 @@ export default function MenuManagementPage() {
     setShowItemModal(true);
   };
 
-  const handleSaveItem = () => {
+  const handleSaveItem = async () => {
     if (!itemForm.name.trim()) {
       setItemError("Item name is required.");
       return;
@@ -260,8 +390,10 @@ export default function MenuManagementPage() {
       return;
     }
 
+    const targetRestId = restaurantId || getLocalState().restaurant.id;
+
     if (editingItem) {
-      updateMenuItem(editingItem.id, {
+      const updates = {
         name: itemForm.name.trim(),
         description: itemForm.description.trim() || null,
         image_url: itemForm.image_url.trim() || null,
@@ -270,38 +402,82 @@ export default function MenuManagementPage() {
         category_id: itemForm.category_id,
         dietary_type: itemForm.dietary_type,
         is_available: itemForm.is_available,
-      });
+      };
+      try {
+        await fetch(`/api/menu/items/${editingItem.id}`, {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(updates),
+        });
+      } catch {}
+      updateMenuItem(editingItem.id, updates);
       showToast(`"${itemForm.name}" updated`);
     } else {
-      addMenuItem({
+      const itemPayload = {
+        restaurant_id: targetRestId,
+        category_id: itemForm.category_id,
         name: itemForm.name.trim(),
         description: itemForm.description.trim() || null,
         image_url: itemForm.image_url.trim() || null,
         price: Number(itemForm.price),
         tax_rate: Number(itemForm.tax_rate),
-        category_id: itemForm.category_id,
         dietary_type: itemForm.dietary_type,
         is_available: itemForm.is_available,
         sort_order: menuItems.length + 1,
-      });
+      };
+
+      let dbItem: any = null;
+      try {
+        const res = await fetch("/api/menu/items", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(itemPayload),
+        });
+        if (res.ok) {
+          const data = await res.json();
+          dbItem = data.item;
+        }
+      } catch {}
+
+      if (dbItem) {
+        addMenuItem(dbItem);
+      } else {
+        addMenuItem(itemPayload);
+      }
       showToast(`"${itemForm.name}" added to menu`);
     }
     setShowItemModal(false);
   };
 
-  const handleToggle = (id: string) => {
-    const newState = toggleMenuItemAvailability(id);
-    showToast(newState ? "Item marked available" : "Item marked sold out");
+  const handleToggle = async (id: string) => {
+    const item = menuItems.find((m) => m.id === id);
+    if (!item) return;
+    const newState = !item.is_available;
+    try {
+      await fetch(`/api/menu/items/${id}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ is_available: newState }),
+      });
+    } catch {}
+    const updatedState = toggleMenuItemAvailability(id);
+    showToast(updatedState ? "Item marked available" : "Item marked sold out");
   };
 
   // --------------- DELETE ACTIONS ---------------
-  const confirmDelete = () => {
+  const confirmDelete = async () => {
     if (!deleteTarget) return;
     if (deleteTarget.type === "category") {
+      try {
+        await fetch(`/api/menu/categories/${deleteTarget.id}`, { method: "DELETE" });
+      } catch {}
       deleteCategory(deleteTarget.id);
       if (selectedCategory === deleteTarget.id) setSelectedCategory("ALL");
       showToast(`Category "${deleteTarget.name}" deleted`);
     } else {
+      try {
+        await fetch(`/api/menu/items/${deleteTarget.id}`, { method: "DELETE" });
+      } catch {}
       deleteMenuItem(deleteTarget.id);
       showToast(`"${deleteTarget.name}" removed from menu`);
     }

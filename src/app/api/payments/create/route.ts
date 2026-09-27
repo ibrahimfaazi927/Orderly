@@ -13,54 +13,96 @@ export async function POST(request: Request) {
       return NextResponse.json({ error: "Cart cannot be empty" }, { status: 400 });
     }
 
-    const supabase = await createClient();
+    const cleanSlug = (restaurantSlug || "").trim().toLowerCase();
+    const isPlaceholder =
+      !process.env.NEXT_PUBLIC_SUPABASE_URL ||
+      process.env.NEXT_PUBLIC_SUPABASE_URL.includes("placeholder");
 
-    const isPlaceholder = !process.env.NEXT_PUBLIC_SUPABASE_URL || process.env.NEXT_PUBLIC_SUPABASE_URL.includes("placeholder");
-
-    // 1. Fetch Restaurant
+    let supabase: any = null;
     let restaurant: any = null;
+    let table: any = null;
+
     if (!isPlaceholder) {
-      const { data: dbRestaurant } = await supabase
+      supabase = await createClient();
+
+      // 1. Authoritative Restaurant Lookup by slug (case-insensitive) or UUID
+      let { data: dbRestaurant } = await supabase
         .from("restaurants")
         .select("*")
-        .eq("slug", restaurantSlug)
-        .single();
+        .ilike("slug", cleanSlug)
+        .maybeSingle();
+
+      if (!dbRestaurant) {
+        // Fallback: check if slug passed is actually an ID
+        const { data: byId } = await supabase
+          .from("restaurants")
+          .select("*")
+          .eq("id", cleanSlug)
+          .maybeSingle();
+        dbRestaurant = byId;
+      }
+
       restaurant = dbRestaurant;
-    }
 
-    if (!restaurant) {
-      restaurant = restaurantSlug === MOCK_RESTAURANT.slug ? MOCK_RESTAURANT : MOCK_RESTAURANT;
-    }
+      if (!restaurant) {
+        return NextResponse.json(
+          { error: `Restaurant "${restaurantSlug}" could not be found or is inactive.` },
+          { status: 404 }
+        );
+      }
 
-    // 2. Fetch & Validate Table
-    let table: any = null;
-    if (!isPlaceholder) {
-      const { data: dbTable } = await supabase
-        .from("restaurant_tables")
-        .select("*")
-        .eq("token", tableToken)
-        .eq("restaurant_id", restaurant.id)
-        .single();
-      table = dbTable;
-    }
+      if (restaurant.is_active === false) {
+        return NextResponse.json(
+          { error: "This restaurant is currently closed or inactive" },
+          { status: 400 }
+        );
+      }
 
-    table = table || MOCK_TABLES.find((t) => t.token === tableToken);
+      // 2. Authoritative Table Lookup
+      if (tableToken) {
+        const { data: dbTable } = await supabase
+          .from("restaurant_tables")
+          .select("*")
+          .eq("token", tableToken)
+          .eq("restaurant_id", restaurant.id)
+          .maybeSingle();
+        table = dbTable;
+      }
 
-    if (!table) {
-      // Fallback virtual table
-      table = {
-        id: `tbl-${Date.now()}`,
-        restaurant_id: restaurant.id,
-        table_number: "Table Guest",
-        token: tableToken,
-      };
-    }
+      if (!table) {
+        // Find any active table for this restaurant
+        const { data: anyTable } = await supabase
+          .from("restaurant_tables")
+          .select("*")
+          .eq("restaurant_id", restaurant.id)
+          .eq("is_active", true)
+          .limit(1)
+          .maybeSingle();
 
-    if (restaurant.is_active === false) {
-      return NextResponse.json(
-        { error: "This restaurant is currently closed or inactive" },
-        { status: 400 }
-      );
+        table = anyTable;
+      }
+
+      if (!table) {
+        // Create an authoritative table entry in database
+        const { data: newTable } = await supabase
+          .from("restaurant_tables")
+          .insert({
+            restaurant_id: restaurant.id,
+            table_number: "01",
+            token: tableToken || `tbl_${Math.random().toString(36).substring(2, 9).toUpperCase()}`,
+            is_active: true,
+          })
+          .select()
+          .single();
+        table = newTable;
+      }
+    } else {
+      // Mock / Demo Mode
+      restaurant =
+        cleanSlug === MOCK_RESTAURANT.slug ? MOCK_RESTAURANT : { ...MOCK_RESTAURANT, slug: cleanSlug };
+      table = tableToken
+        ? MOCK_TABLES.find((t) => t.token === tableToken) || MOCK_TABLES[0]
+        : MOCK_TABLES[0];
     }
 
     if (table && table.is_active === false) {
@@ -70,21 +112,51 @@ export async function POST(request: Request) {
       );
     }
 
-    // 3. ZERO-TRUST PRICING: Fetch authoritative item prices strictly from DB/authoritative catalog
-    const itemIds = items.map((i: any) => i.itemId);
+    // 3. ZERO-TRUST PRICING: Authoritatively fetch item prices strictly from DB
+    const itemIds = items.map((i: any) => i.itemId).filter(Boolean);
     let menuItems: any[] = [];
-    if (!isPlaceholder) {
+
+    if (!isPlaceholder && restaurant?.id) {
       const { data: dbItems } = await supabase
         .from("menu_items")
         .select("*")
         .in("id", itemIds)
         .eq("restaurant_id", restaurant.id);
+
       if (dbItems && dbItems.length > 0) {
         menuItems = dbItems;
       }
-    }
-    if (menuItems.length === 0) {
+
+      // If some items were not matched by ID, try matching by name within this restaurant
+      if (menuItems.length < items.length) {
+        const { data: allRestaurantItems } = await supabase
+          .from("menu_items")
+          .select("*")
+          .eq("restaurant_id", restaurant.id)
+          .eq("is_available", true);
+
+        if (allRestaurantItems && allRestaurantItems.length > 0) {
+          for (const cartItem of items) {
+            if (!menuItems.some((m) => m.id === cartItem.itemId)) {
+              const matchedByName = allRestaurantItems.find(
+                (m: any) =>
+                  m.name.trim().toLowerCase() ===
+                  (cartItem.name || cartItem.itemName || "").trim().toLowerCase()
+              );
+              if (matchedByName && !menuItems.some((m) => m.id === matchedByName.id)) {
+                menuItems.push(matchedByName);
+                // Update cartItem itemId to real DB id for seamless consistency
+                cartItem.itemId = matchedByName.id;
+              }
+            }
+          }
+        }
+      }
+    } else {
       menuItems = MOCK_MENU_ITEMS.filter((m) => itemIds.includes(m.id));
+      if (menuItems.length === 0) {
+        menuItems = MOCK_MENU_ITEMS;
+      }
     }
 
     // Recalculate prices strictly on server using authoritative database data
@@ -92,7 +164,13 @@ export async function POST(request: Request) {
     let calculatedSubtotal = 0;
 
     for (const cartItem of items) {
-      const match = menuItems.find((m) => m.id === cartItem.itemId);
+      let match = menuItems.find((m) => m.id === cartItem.itemId);
+      if (!match && cartItem.name) {
+        match = menuItems.find(
+          (m) => m.name.toLowerCase() === cartItem.name.toLowerCase()
+        );
+      }
+
       if (!match) {
         return NextResponse.json(
           { error: `Item "${cartItem.itemId}" is invalid or does not belong to this restaurant` },
@@ -126,7 +204,10 @@ export async function POST(request: Request) {
 
       const name = match.name;
       const lineSubtotal = unitPrice * quantity;
-      const lineTaxRate = match?.tax_rate !== undefined ? Number(match.tax_rate) : Number(restaurant.tax_rate || 5);
+      const lineTaxRate =
+        match?.tax_rate !== undefined
+          ? Number(match.tax_rate)
+          : Number(restaurant.tax_rate || 5);
       const lineTax = Number(((lineSubtotal * lineTaxRate) / 100).toFixed(2));
       const lineTotal = Number((lineSubtotal + lineTax).toFixed(2));
 
@@ -141,10 +222,12 @@ export async function POST(request: Request) {
       });
     }
 
-    const calculatedTax = Number(((calculatedSubtotal * Number(restaurant.tax_rate || 5)) / 100).toFixed(2));
+    const calculatedTax = Number(
+      ((calculatedSubtotal * Number(restaurant.tax_rate || 5)) / 100).toFixed(2)
+    );
     const calculatedTotal = Number((calculatedSubtotal + calculatedTax).toFixed(2));
     const orderNumber = `ORD-${Math.floor(1000 + Math.random() * 9000)}`;
-    const orderId = `ord-${Date.now()}`;
+    const orderId = typeof crypto !== "undefined" && crypto.randomUUID ? crypto.randomUUID() : `ord-${Date.now()}`;
 
     // 4. Initialize Payment Provider
     const provider = getPaymentProvider();
@@ -155,37 +238,53 @@ export async function POST(request: Request) {
       currency: restaurant.currency || "INR",
       receipt: orderNumber,
       notes: {
-        table_number: table.table_number,
+        table_number: table?.table_number || "Table",
         customer_name: customerName || "Guest",
       },
     });
 
     // 5. Insert order into DB if connected
-    try {
-      await supabase.from("orders").insert({
-        id: orderId,
-        restaurant_id: restaurant.id,
-        table_id: table.id,
-        order_number: orderNumber,
-        subtotal: calculatedSubtotal,
-        tax: calculatedTax,
-        total: calculatedTotal,
-        currency: restaurant.currency || "INR",
-        status: "PAYMENT_PENDING",
-        payment_status: "PENDING",
-        customer_name: customerName || "Walk-in Guest",
-        customer_phone: customerPhone || null,
-        notes: notes || null,
-      });
-    } catch {
-      // Offline / local mock state will be synchronized via client store
+    if (!isPlaceholder && supabase && restaurant?.id && table?.id) {
+      try {
+        await supabase.from("orders").insert({
+          id: orderId,
+          restaurant_id: restaurant.id,
+          table_id: table.id,
+          order_number: orderNumber,
+          subtotal: calculatedSubtotal,
+          tax: calculatedTax,
+          total: calculatedTotal,
+          currency: restaurant.currency || "INR",
+          status: "PAYMENT_PENDING",
+          payment_status: "PENDING",
+          customer_name: customerName || "Walk-in Guest",
+          customer_phone: customerPhone || null,
+          notes: notes || null,
+        });
+
+        // Insert order line items
+        if (orderItemsCalculated.length > 0) {
+          const lineItemsToInsert = orderItemsCalculated.map((item) => ({
+            order_id: orderId,
+            menu_item_id: item.menu_item_id,
+            item_name_snapshot: item.item_name_snapshot,
+            unit_price_snapshot: item.unit_price_snapshot,
+            quantity: item.quantity,
+            tax: item.tax,
+            total: item.total,
+          }));
+          await supabase.from("order_items").insert(lineItemsToInsert);
+        }
+      } catch (dbErr) {
+        logger.warn("payment_order_db_insert_warning", { error: String(dbErr) });
+      }
     }
 
     logger.info("payment_order_created", {
       orderId,
       orderNumber,
       restaurantId: restaurant.id,
-      tableNumber: table.table_number,
+      tableNumber: table?.table_number,
       total: calculatedTotal,
       currency: restaurant.currency || "INR",
       provider: paymentOrder.provider,
@@ -197,7 +296,7 @@ export async function POST(request: Request) {
       orderId,
       orderNumber,
       restaurantName: restaurant.name,
-      tableNumber: table.table_number,
+      tableNumber: table?.table_number || "Table",
       subtotal: calculatedSubtotal,
       tax: calculatedTax,
       total: calculatedTotal,
@@ -209,6 +308,9 @@ export async function POST(request: Request) {
     });
   } catch (err: any) {
     logger.error("payment_order_creation_failed", err);
-    return NextResponse.json({ error: err.message || "Failed to initiate payment" }, { status: 500 });
+    return NextResponse.json(
+      { error: err.message || "Failed to initiate payment" },
+      { status: 500 }
+    );
   }
 }

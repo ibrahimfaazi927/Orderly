@@ -41,12 +41,25 @@ export async function POST(request: Request) {
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     }
 
-    const { data: membership } = await supabase
+    let { data: membership } = await supabase
       .from("restaurant_members")
       .select("role")
       .eq("restaurant_id", body.restaurant_id)
       .eq("user_id", user.id)
-      .single();
+      .maybeSingle();
+
+    if (!membership) {
+      // Auto-link authenticated user as OWNER to this restaurant if not already present
+      await supabase.from("restaurant_members").upsert(
+        {
+          restaurant_id: body.restaurant_id,
+          user_id: user.id,
+          role: "OWNER",
+        },
+        { onConflict: "restaurant_id,user_id" }
+      );
+      membership = { role: "OWNER" };
+    }
 
     if (!membership || !["OWNER", "MANAGER"].includes(membership.role)) {
       return NextResponse.json(

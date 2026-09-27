@@ -99,8 +99,29 @@ export default function CustomerOrderPage({
   const [callWaiterSent, setCallWaiterSent] = useState(false);
   const previousStatusRef = useRef<string | null>(null);
 
-  // Sync state
-  const sync = () => {
+  // Authoritatively load restaurant, table, categories, and menu items from server/Supabase
+  const loadMenu = async () => {
+    try {
+      const res = await fetch(
+        `/api/restaurants/public?slug=${encodeURIComponent(restaurantSlug)}&tableToken=${encodeURIComponent(tableToken)}`
+      );
+      if (res.ok) {
+        const data = await res.json();
+        if (data.success && data.restaurant) {
+          setRestaurant(data.restaurant);
+          setCategories(data.categories || []);
+          setMenuItems(data.menuItems || []);
+          if (data.table) {
+            setTable(data.table);
+          }
+          return;
+        }
+      }
+    } catch (err) {
+      console.warn("[Customer Menu] Failed to load from API, falling back to local store:", err);
+    }
+
+    // Fallback: local or mock state
     const state = getLocalState();
     setRestaurant(state.restaurant);
     const matchedTable = state.tables.find((t) => t.token === tableToken);
@@ -117,7 +138,11 @@ export default function CustomerOrderPage({
     );
     setCategories(state.categories || []);
     setMenuItems(state.menuItems || []);
+  };
 
+  // Sync state for kitchen order tracking
+  const syncKitchen = () => {
+    const state = getLocalState();
     // Check if active order status updated in kitchen
     if (activeOrder) {
       const refreshed = state.orders.find((o) => o.id === activeOrder.id);
@@ -142,14 +167,14 @@ export default function CustomerOrderPage({
   }, [activeOrder?.status]);
 
   useEffect(() => {
-    sync();
-    window.addEventListener("orderly_storage_change", sync);
-    const interval = setInterval(sync, 2000); // Polling for live kitchen updates
+    loadMenu();
+    window.addEventListener("orderly_storage_change", syncKitchen);
+    const interval = setInterval(syncKitchen, 2000); // Polling for live kitchen updates
     return () => {
-      window.removeEventListener("orderly_storage_change", sync);
+      window.removeEventListener("orderly_storage_change", syncKitchen);
       clearInterval(interval);
     };
-  }, [tableToken, activeOrder?.id, activeOrder?.status]);
+  }, [restaurantSlug, tableToken, activeOrder?.id, activeOrder?.status]);
 
   useEffect(() => {
     loadRazorpayScript();
@@ -242,6 +267,8 @@ export default function CustomerOrderPage({
 
       // ONLY after verified server confirmation: synchronize in client store
       const order = createOrderFromCustomer({
+        id: payload.orderId,
+        orderNumber: payload.orderNumber,
         restaurantId: restaurant?.id || "",
         tableId: table?.id || "",
         tableNumber: table?.table_number || "Table",
@@ -356,7 +383,12 @@ export default function CustomerOrderPage({
           body: JSON.stringify({
             restaurantSlug,
             tableToken,
-            items: cart.map((c) => ({ itemId: c.item.id, quantity: c.quantity })),
+            items: cart.map((c) => ({
+              itemId: c.item.id,
+              quantity: c.quantity,
+              name: c.item.name,
+              price: c.item.price,
+            })),
             customerName: customerName.trim() || "Guest",
             customerPhone: customerPhone.trim(),
             notes: specialNotes.trim(),

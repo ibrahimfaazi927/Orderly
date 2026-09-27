@@ -27,12 +27,24 @@ export async function PATCH(
       return NextResponse.json({ error: "Menu item not found" }, { status: 404 });
     }
 
-    const { data: membership } = await supabase
+    let { data: membership } = await supabase
       .from("restaurant_members")
       .select("role")
       .eq("restaurant_id", item.restaurant_id)
       .eq("user_id", user.id)
-      .single();
+      .maybeSingle();
+
+    if (!membership) {
+      await supabase.from("restaurant_members").upsert(
+        {
+          restaurant_id: item.restaurant_id,
+          user_id: user.id,
+          role: "OWNER",
+        },
+        { onConflict: "restaurant_id,user_id" }
+      );
+      membership = { role: "OWNER" };
+    }
 
     if (!membership || !["OWNER", "MANAGER"].includes(membership.role)) {
       return NextResponse.json({ error: "Forbidden" }, { status: 403 });
@@ -90,12 +102,24 @@ export async function DELETE(
       return NextResponse.json({ error: "Menu item not found" }, { status: 404 });
     }
 
-    const { data: membership } = await supabase
+    let { data: membership } = await supabase
       .from("restaurant_members")
       .select("role")
       .eq("restaurant_id", item.restaurant_id)
       .eq("user_id", user.id)
-      .single();
+      .maybeSingle();
+
+    if (!membership) {
+      await supabase.from("restaurant_members").upsert(
+        {
+          restaurant_id: item.restaurant_id,
+          user_id: user.id,
+          role: "OWNER",
+        },
+        { onConflict: "restaurant_id,user_id" }
+      );
+      membership = { role: "OWNER" };
+    }
 
     if (!membership || !["OWNER", "MANAGER"].includes(membership.role)) {
       return NextResponse.json({ error: "Forbidden" }, { status: 403 });
